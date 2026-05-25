@@ -1,6 +1,6 @@
 # Current State — ShopeePay PHP SDK
 
-**Snapshot:** 2026-05-25 (post-AccountLinking). Handoff doc for a fresh Claude session.
+**Snapshot:** 2026-05-25 (post-LinkAndPay). Handoff doc for a fresh Claude session.
 
 ## What this project is
 
@@ -15,11 +15,11 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
 
 - **Design phase complete.** Plan reviewed via `/office-hours` + `/plan-eng-review`.
 - **Spec review passed:** 2 iterations, final score 8.5/10.
-- **Build-order steps 1–5 done** (scaffold, kernel, transport+token, webhook,
-  AccountLinkingService + DTOs). Branch `scaffold-shopeepay-sdk` at `cd8f285`.
-  108 unit tests pass, phpstan level 8 clean.
-- **Next:** build-order step 6 — `Service/LinkAndPayService` + its DTOs
-  (create / checkStatus / refund; svc 54/55/58).
+- **Build-order steps 1–6 done** (scaffold, kernel, transport+token, webhook,
+  AccountLinking, LinkAndPay). Branch `scaffold-shopeepay-sdk` at `e656d6e`.
+  116 unit tests pass, phpstan level 8 clean.
+- **Next:** build-order step 7 — `Service/SubscriptionService` + its DTOs
+  (create / checkStatus / refund; svc 54/55/58, notify svc 52).
 
 ## Source-of-truth files
 
@@ -103,7 +103,13 @@ fixtures in `tests/fixtures/` (test-only PEM key pair).
    bind/unbind/inquiry POSTs routed through Transport. 7 DTOs with ctor
    validation; `GetAuthCodeRequest::generateState()` helper for CSRF token.
    Endpoint paths are SNAP-BI-convention guesses, pending sandbox confirmation.
-6. ⏭ **LinkAndPayService** + DTOs (create / checkStatus / refund) — START HERE.
+6. ✅ **LinkAndPayService** — create (svc 54, `/v1.1/debit/payment-host-to-host`),
+   checkStatus (svc 55, `/v1.0/debit/status`), refund (svc 58, `/v1.0/debit/refund`).
+   CheckStatusResponse exposes `isSuccess()` + `isTerminal()` so caller polling
+   loops don't re-encode the SNAP BI status taxonomy. RefundResponse hydrates
+   refundAmount as a Money (null on malformed gateway value, never throws).
+7. ⏭ **SubscriptionService** + DTOs — START HERE. Reuses much of LinkAndPay's
+   shape; notify svc is 52 instead of 56.
 7. **SubscriptionService** + DTOs.
 8. **AuthCaptureService** + DTOs. (Services 5–8 can be parallelized in worktrees.)
 9. Examples (one runnable per flow).
@@ -146,5 +152,5 @@ enforcement, concurrent token-refresh mutex.
 ```
 Read /home/qdh/RRQ/shopeepay/current_state.md, then
 ~/.gstack/projects/shopeepay/qdh-init-design-20260525-151513.md.
-Resume at build-order step 6 (LinkAndPayService).
+Resume at build-order step 7 (SubscriptionService).
 ```
