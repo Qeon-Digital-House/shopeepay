@@ -1,6 +1,6 @@
 # Current State — ShopeePay PHP SDK
 
-**Snapshot:** 2026-05-25 (post-LinkAndPay). Handoff doc for a fresh Claude session.
+**Snapshot:** 2026-05-25 (post-Subscription). Handoff doc for a fresh Claude session.
 
 ## What this project is
 
@@ -15,11 +15,12 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
 
 - **Design phase complete.** Plan reviewed via `/office-hours` + `/plan-eng-review`.
 - **Spec review passed:** 2 iterations, final score 8.5/10.
-- **Build-order steps 1–6 done** (scaffold, kernel, transport+token, webhook,
-  AccountLinking, LinkAndPay). Branch `scaffold-shopeepay-sdk` at `e656d6e`.
-  116 unit tests pass, phpstan level 8 clean.
-- **Next:** build-order step 7 — `Service/SubscriptionService` + its DTOs
-  (create / checkStatus / refund; svc 54/55/58, notify svc 52).
+- **Build-order steps 1–7 done** (scaffold, kernel, transport+token, webhook,
+  AccountLinking, LinkAndPay, Subscription). Branch `scaffold-shopeepay-sdk`
+  at `7d9e499`. 122 unit tests pass, phpstan level 8 clean.
+- **Next:** build-order step 8 — `Service/AuthCaptureService` + its DTOs
+  (authorize/capture/void/refund + query{Auth,Capture,Void}; svc 63/65/67/69
+  + 64/66/68).
 
 ## Source-of-truth files
 
@@ -108,8 +109,14 @@ fixtures in `tests/fixtures/` (test-only PEM key pair).
    CheckStatusResponse exposes `isSuccess()` + `isTerminal()` so caller polling
    loops don't re-encode the SNAP BI status taxonomy. RefundResponse hydrates
    refundAmount as a Money (null on malformed gateway value, never throws).
-7. ⏭ **SubscriptionService** + DTOs — START HERE. Reuses much of LinkAndPay's
-   shape; notify svc is 52 instead of 56.
+7. ✅ **SubscriptionService** — same paths as LinkAndPay; gateway disambiguates
+   on a required `subscriptionId` field. Notify lands on svc 52 (handled by
+   existing `Webhook\EventFactory` dispatch). DTOs kept split from LinkAndPay
+   per locked decision #4 — the refund DTO already diverges (subscriptionId).
+8. ⏭ **AuthCaptureService** + DTOs — START HERE. Largest service of the four:
+   authorize/capture/void/refund + three query ops. State machine constraints
+   (one partial capture per auth, void before capture, refund after capture)
+   are documented but not client-enforced in v1.
 7. **SubscriptionService** + DTOs.
 8. **AuthCaptureService** + DTOs. (Services 5–8 can be parallelized in worktrees.)
 9. Examples (one runnable per flow).
@@ -152,5 +159,5 @@ enforcement, concurrent token-refresh mutex.
 ```
 Read /home/qdh/RRQ/shopeepay/current_state.md, then
 ~/.gstack/projects/shopeepay/qdh-init-design-20260525-151513.md.
-Resume at build-order step 7 (SubscriptionService).
+Resume at build-order step 8 (AuthCaptureService).
 ```
