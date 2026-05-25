@@ -1,0 +1,41 @@
+ARG PHP_VERSION=8.1
+FROM php:${PHP_VERSION}-cli
+
+# Toolchain + system libs needed to build the PHP extensions we use in tests.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        unzip \
+        libzip-dev \
+        libonig-dev \
+        libxml2-dev \
+        libcurl4-openssl-dev \
+        zlib1g-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# PHP extensions required for composer, phpunit, the SDK runtime, and tests.
+# Note: openssl, hash, json, dom, xml, simplexml, tokenizer, ctype, fileinfo,
+# curl, phar are built into the php:cli base image — only the ones below need
+# explicit installation.
+#   - opcache: faster repeated test runs
+#   - zip:     composer package extraction
+#   - mbstring: PHPUnit string handling, phpstan
+#   - bcmath:  Money arithmetic safety (numeric strings, 2-decimal enforcement)
+RUN docker-php-ext-install -j"$(nproc)" \
+        opcache \
+        zip \
+        mbstring \
+        bcmath
+
+# pcov: fast line-coverage driver for PHPUnit. Required to enforce the
+# ≥85% coverage goal without the runtime cost of xdebug.
+RUN pecl install pcov \
+    && docker-php-ext-enable pcov
+
+# Composer (pinned to v2.7).
+COPY --from=composer:2.7 /usr/bin/composer /usr/local/bin/composer
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_NO_INTERACTION=1 \
+    COMPOSER_HOME=/tmp/composer
+
+WORKDIR /app
