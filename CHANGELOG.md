@@ -35,3 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 5 runnable example scripts under `examples/` covering all four flows
   plus a webhook receiver. Includes the mandatory `UnknownEvent` match arm.
 - README quickstart + per-flow guide.
+- `scripts/probe-sandbox.php` + `make probe` — empirical probe that
+  records the gateway's `expiresIn` and classifies each AuthCapture path
+  as valid / may-be-wrong / indeterminate. Used to lock the 6 SNAP-BI
+  guesses ahead of v0.1.0 release.

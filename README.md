@@ -375,6 +375,38 @@ If you prefer native PHP (no docker), `composer install && vendor/bin/phpunit`
 also works as long as your local PHP has `openssl`, `mbstring`, `dom`, `zip`,
 and `curl` enabled.
 
+### Sandbox probe
+
+Several SDK constants are documented as tentative pending empirical
+confirmation: the access-token TTL (assumed 14 minutes), the six
+`/v1.0/auth/*` endpoint paths (only `/v1.0/auth/refund` is design-doc
+pinned), and the `channelId` value (`95221`, SNAP BI e-money default).
+
+[`scripts/probe-sandbox.php`](scripts/probe-sandbox.php) issues a single
+access-token request (prints the gateway's `expiresIn`) and POSTs minimal
+probe bodies against every endpoint, classifying each as `looks-valid`,
+`may-be-wrong-path`, or `indeterminate`. The probe is read-only — bodies
+are deliberately incomplete so the gateway rejects them with validation
+errors before any state mutation.
+
+```bash
+export SHOPEEPAY_CLIENT_ID=...
+export SHOPEEPAY_CLIENT_SECRET=...
+export SHOPEEPAY_MERCHANT_ID=...
+export SHOPEEPAY_PRIVATE_KEY_PATH=./.keys/merchant-private.pem
+export SHOPEEPAY_PUBLIC_KEY_PATH=./.keys/shopeepay-public.pem
+
+make probe                       # human-readable report
+php scripts/probe-sandbox.php --json   # JSON report (host PHP)
+php scripts/probe-sandbox.php --production   # against live API (confirms first)
+```
+
+Place your PEM keys somewhere inside the project tree (e.g. `./.keys/`,
+gitignored) so the dev container can reach them via its `/app` bind mount.
+After running, update `src/Service/AuthCaptureService.php` paths and
+`Config::$tokenTtlSeconds` if anything classified as `may-be-wrong-path`
+or if `expiresIn` diverged from 840.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

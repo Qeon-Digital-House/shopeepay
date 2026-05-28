@@ -1,6 +1,6 @@
 # Current State — ShopeePay PHP SDK
 
-**Snapshot:** 2026-05-28 (post-README). Handoff doc for a fresh Claude session.
+**Snapshot:** 2026-05-28 (post-Probe-tooling). Handoff doc for a fresh Claude session.
 
 ## What this project is
 
@@ -15,13 +15,16 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
 
 - **Design phase complete.** Plan reviewed via `/office-hours` + `/plan-eng-review`.
 - **Spec review passed:** 2 iterations, final score 8.5/10.
-- **Build-order steps 1–10 done** (scaffold, kernel, transport+token,
-  webhook, AccountLinking, LinkAndPay, Subscription, AuthCapture,
-  Examples, README). Branch `scaffold-shopeepay-sdk`. 136 unit tests pass,
-  phpstan level 8 clean, all examples parse clean.
-- **Next:** build-order step 11 — sandbox probe to confirm the 6 guessed
-  `/v1.0/auth/*` paths, the access-token TTL (currently 14 min default),
-  and refund time windows. Then 0.1.0 release (step 12).
+- **Build-order steps 1–10 done; step 11 tooling landed.** Probe script
+  (`scripts/probe-sandbox.php`) and `make probe` target are built and lint
+  clean — but the probe has NOT been RUN yet (needs sandbox creds the
+  current session doesn't have). Branch `scaffold-shopeepay-sdk`.
+  136 unit tests pass, phpstan level 8 clean.
+- **Next:** RUN the probe (`make probe` with SHOPEEPAY_* env vars set)
+  and reconcile findings — update `Config::$tokenTtlSeconds` if the
+  gateway's `expiresIn` differs from 840s, and update the 6 SNAP-BI-guess
+  paths in `src/Service/AuthCaptureService.php` if any classified as
+  `may-be-wrong-path`. Then 0.1.0 release (step 12).
 
 ## Source-of-truth files
 
@@ -136,14 +139,22 @@ fixtures in `tests/fixtures/` (test-only PEM key pair).
     scripts. Existing references to a `ShopeePay` facade were stripped
     since none exists yet — the v2 Laravel companion package is where
     that ergonomic surface will live.
-11. ⏭ **Sandbox probe** — START HERE. Empirically confirm:
-    - the 6 SNAP-BI-convention `/v1.0/auth/*` paths (only
-      `/v1.0/auth/refund` is design-doc-pinned),
-    - access-token TTL (assumed 14 min — `Config::$tokenTtlSeconds`),
-    - debit refund window (svc 58),
-    - that `channelId='95221'` is accepted across all four flows.
-    Update the corresponding consts in `Config` and the service paths
-    if the probe surfaces mismatches.
+11. 🔶 **Sandbox probe** — tooling complete, run pending.
+    `scripts/probe-sandbox.php` is built: it issues one access-token
+    request (capturing the gateway's `expiresIn`), POSTs minimal probe
+    bodies against every endpoint, and classifies each as `looks-valid`
+    / `may-be-wrong-path` / `indeterminate`. Includes a control set of
+    known-good Link & Pay paths so a bad sandbox day doesn't get
+    misread as a path issue. Read-only by construction (probe bodies
+    are deliberately incomplete so the gateway rejects them before any
+    state mutation). Wired as `make probe`; supports `--json` and
+    `--production` (the latter prompts for explicit confirmation).
+    See README "Sandbox probe" section.
+    **To finish step 11:** export the SHOPEEPAY_* env vars, run
+    `make probe`, then reconcile per the "Next" line above.
+    Debit refund window remains the only probe-resistant item — it
+    needs a real settled capture; document in v0.1.0 release notes as
+    a known unknown.
 12. **Release 0.1.0** to Packagist via tag-triggered workflow.
 
 ## Known critical gap to mitigate during impl
@@ -181,5 +192,5 @@ enforcement, concurrent token-refresh mutex.
 ```
 Read /home/qdh/RRQ/shopeepay/current_state.md, then
 ~/.gstack/projects/shopeepay/qdh-init-design-20260525-151513.md.
-Resume at build-order step 11 (sandbox probe).
+Run `make probe` to finish step 11, then resume at step 12 (release).
 ```
