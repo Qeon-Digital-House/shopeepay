@@ -22,7 +22,11 @@ PHP_SLUG     = $(subst .,,$(PHP_VERSION))
 # reference them from docker-compose.dev.yml.
 ENV          = PHP_VERSION=$(PHP_VERSION) DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g)
 COMPOSE      = $(ENV) docker compose -f .docker/docker-compose.dev.yml -p shopeepay-dev-$(PHP_SLUG)
-RUN          = $(COMPOSE) run --rm --entrypoint "" php
+# RUN_BASE: `docker compose run` without the service name, so callers can
+# inject `-e VAR` / `-v` flags before the service. RUN appends the service
+# name (`php`) for the common case.
+RUN_BASE     = $(COMPOSE) run --rm --entrypoint ""
+RUN          = $(RUN_BASE) php
 
 .PHONY: build install update test coverage test-integration phpstan shell matrix probe clean
 
@@ -61,12 +65,12 @@ matrix:
 # env vars (see .env.example). Read-only — sends only probe bodies that
 # the gateway rejects with validation errors.
 probe: build
-	$(RUN) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_SECRET_KEY \
-	       -e SHOPEEPAY_CWS_MERCHANT_ID -e SHOPEEPAY_CWS_STORE_ID \
-	       -e SHOPEEPAY_PRIVATE_KEY -e SHOPEEPAY_PUBLIC_KEY \
-	       -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
-	       -e SHOPEEPAY_IS_PRODUCTION \
-	       php php scripts/probe-sandbox.php
+	$(RUN_BASE) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_SECRET_KEY \
+	            -e SHOPEEPAY_CWS_MERCHANT_ID -e SHOPEEPAY_CWS_STORE_ID \
+	            -e SHOPEEPAY_PRIVATE_KEY -e SHOPEEPAY_PUBLIC_KEY \
+	            -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
+	            -e SHOPEEPAY_IS_PRODUCTION \
+	            php php scripts/probe-sandbox.php $(ARGS)
 
 clean:
 	rm -rf vendor composer.lock .phpunit.cache .phpunit.result.cache coverage
