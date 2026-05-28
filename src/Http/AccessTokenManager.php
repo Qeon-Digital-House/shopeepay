@@ -16,7 +16,7 @@ use ShopeePay\Exception\NetworkException;
  *
  *   1. caller asks for a token
  *   2. cache hit → return cached value, no network
- *   3. cache miss → POST /v1.0/access-token, cache result with TTL from
+ *   3. cache miss → POST /v1.0/access-token/b2b, cache result with TTL from
  *      Config (default 840s = 14 min; the design notes this is tentative
  *      until a sandbox probe confirms the real ShopeePay token lifetime)
  *   4. on a 401 or in-body 4011xxx during a transaction, Transport calls
@@ -33,7 +33,7 @@ use ShopeePay\Exception\NetworkException;
  */
 final class AccessTokenManager
 {
-    private const PATH                 = '/v1.0/access-token';
+    private const PATH                 = '/v1.0/access-token/b2b';
     private const GRANT_TYPE_BODY      = '{"grantType":"client_credentials"}';
     private const CACHE_KEY_PREFIX     = 'shopeepay.access_token';
 

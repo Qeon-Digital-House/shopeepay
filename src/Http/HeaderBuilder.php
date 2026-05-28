@@ -12,7 +12,7 @@ use ShopeePay\Config;
  * Builds the two distinct header sets SNAP BI requires. Keeping them in one
  * class makes the timezone and CHANNEL-ID rules visible in one file.
  *
- *   Access token (POST /v1.0/access-token):
+ *   Access token (POST /v1.0/access-token/b2b):
  *     X-CLIENT-KEY  : merchant clientId
  *     X-TIMESTAMP   : Y-m-d\TH:i:sP                 in Asia/Jakarta (seconds)
  *     X-SIGNATURE   : RSA-SHA256(clientKey|ts)      base64

@@ -198,7 +198,7 @@ function probeAccessToken(Config $config, HeaderBuilder $headerBuilder): array
 {
     $body    = '{"grantType":"client_credentials"}';
     $request = $config->requestFactory
-        ->createRequest('POST', $config->baseUrl() . '/v1.0/access-token')
+        ->createRequest('POST', $config->baseUrl() . '/v1.0/access-token/b2b')
         ->withBody($config->streamFactory->createStream($body));
     foreach ($headerBuilder->accessTokenHeaders() as $h => $v) {
         $request = $request->withHeader($h, $v);
@@ -398,6 +398,21 @@ function printReport(array $report): void
     } else {
         echo "✗ No access token in response. channelId acceptance and path probes\n";
         echo "  below will all fail until creds/signature/keys are correct.\n";
+
+        // Dump the raw body so the failure is actionable. When `raw` is a
+        // string the gateway returned non-JSON (probably an HTML 404 from an
+        // edge proxy — base URL or path wrong). When it's an array it's a
+        // SNAP-BI envelope shape we didn't recognize.
+        echo "\n  Raw response body (first 400 chars):\n";
+        $raw = $tp['raw'];
+        $rawStr = is_array($raw)
+            ? json_encode($raw, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+            : (string) $raw;
+        echo "    " . str_replace("\n", "\n    ", substr($rawStr, 0, 400));
+        if (strlen($rawStr) > 400) {
+            echo "\n    [...truncated, " . (strlen($rawStr) - 400) . " more chars]";
+        }
+        echo "\n";
     }
     echo "\n";
 
