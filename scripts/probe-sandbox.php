@@ -5,42 +5,40 @@ declare(strict_types=1);
 /**
  * scripts/probe-sandbox.php — empirical probe against the ShopeePay sandbox.
  *
- * Build-order step 11. Answers the open questions the design doc left
- * tentative:
+ * Walks the real onboarding + first-debit flow end-to-end so design-doc
+ * questions can be answered with live gateway data instead of guesses:
  *
  *   1. **Access-token TTL.** The SDK currently assumes 14 minutes
  *      (`Config::$tokenTtlSeconds = 840`). The gateway returns its own
- *      `expiresIn` field on /access-token responses — the probe reads
- *      that and prints it. Treat THAT value as ground truth and update
- *      the Config default if it differs.
+ *      `expiresIn` field on /access-token/b2b responses — the probe
+ *      reads that and prints it. Treat THAT value as ground truth and
+ *      update the Config default if it differs.
  *
- *   2. **AuthCapture paths.** Only `/v1.0/auth/refund` is design-doc
- *      pinned. The other six (`/v1.0/auth/payment-host-to-host`,
- *      `/auth/capture`, `/auth/void`, `/auth/status`,
- *      `/auth/capture/status`, `/auth/void/status`) are SNAP-BI guesses.
- *      The probe POSTs a minimal body to each and classifies the response:
+ *   2. **Flow probe.** Four steps, each feeding the next:
+ *        a. get-auth-code                   — GET the consent URL, verify
+ *                                             the endpoint responds
+ *        b. registration-account-binding    — exchange authCode → accountToken
+ *        c. debit/payment-host-to-host      — debit using accountToken
+ *        d. debit/status                    — query the debit's status
  *
- *        - "looks valid"     — the gateway returned a domain-aware error
- *                              (missing partnerReferenceNo, invalid amount,
- *                              etc.) → path is real, body just incomplete
- *        - "may be wrong"    — the gateway returned a 404-shape responseCode
- *                              or "service not found" message → path needs
- *                              correcting
- *        - "indeterminate"   — transport error or unexpected shape
+ *      Each path is classified `success`, `looks-valid-path`,
+ *      `may-be-wrong-path`, or `indeterminate-*`. When the env var for a
+ *      step is missing the probe sends a deliberately-invalid value so
+ *      the path can still be checked.
  *
  *   3. **channelId acceptance.** The SDK uses `95221` (SNAP BI e-money
  *      default). If the access-token probe succeeds, that value is
  *      accepted; the probe surfaces this implicitly.
  *
- *   4. **Refund window.** Not directly probable without a real settled
- *      capture to refund against. Documented as a manual-followup item.
- *
  * Safety:
  *   - Defaults to SANDBOX. Pass `--production` to run against prod
  *     (gated behind an explicit confirmation prompt).
- *   - Sends only deliberately-empty/probe bodies that the gateway will
- *     reject with a validation error before any money movement.
- *   - No state mutation. Read-only probe.
+ *   - With no SHOPEEPAY_AUTH_CODE / SHOPEEPAY_ACCOUNT_TOKEN, sends only
+ *     deliberately-invalid values that the gateway rejects with a
+ *     validation error before any state mutation.
+ *   - With real env values, this DOES exercise real state: bind creates
+ *     a real account-token binding, debit creates a real (small)
+ *     payment intent. Use sandbox creds.
  *
  * Usage:
  *   php scripts/probe-sandbox.php
@@ -52,13 +50,21 @@ declare(strict_types=1);
  *   and ONE of each key pair — SHOPEEPAY_PRIVATE_KEY (PEM string) or
  *   SHOPEEPAY_PRIVATE_KEY_PATH (file path); SHOPEEPAY_PUBLIC_KEY or
  *   SHOPEEPAY_PUBLIC_KEY_PATH.
- *   Optional: SHOPEEPAY_CWS_STORE_ID.
+ *
+ *   Optional (enable richer flow-probe chaining):
+ *     SHOPEEPAY_CWS_STORE_ID       — outlet id, multi-outlet merchants
+ *     SHOPEEPAY_AUTH_CODE          — authCode from a completed consent
+ *                                    flow (otherwise bind probes with a
+ *                                    dummy and only validates the path)
+ *     SHOPEEPAY_ACCOUNT_TOKEN      — fallback accountToken for debit if
+ *                                    bind didn't yield one
  */
 
 require __DIR__ . '/../vendor/autoload.php';
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use ShopeePay\Config;
+use ShopeePay\Dto\AccountLinking\GetAuthCodeRequest;
 use ShopeePay\Environment;
 use ShopeePay\Exception\ApiException;
 use ShopeePay\Exception\NetworkException;
@@ -66,6 +72,7 @@ use ShopeePay\Http\AccessTokenManager;
 use ShopeePay\Http\HeaderBuilder;
 use ShopeePay\Http\Signer;
 use ShopeePay\Http\Transport;
+use ShopeePay\Service\AccountLinkingService;
 use Symfony\Component\Cache\Adapter\ArrayAdapter;
 use Symfony\Component\Cache\Psr16Cache;
 
@@ -119,48 +126,46 @@ $config = new Config(
     storeId:            $storeId,
 );
 
-$signer        = new Signer();
-$headerBuilder = new HeaderBuilder($config, $signer);
-$atm           = new AccessTokenManager($config, $headerBuilder);
-$transport     = new Transport($config, $headerBuilder, $atm);
+$signer         = new Signer();
+$headerBuilder  = new HeaderBuilder($config, $signer);
+$atm            = new AccessTokenManager($config, $headerBuilder);
+$transport      = new Transport($config, $headerBuilder, $atm);
+$accountLinking = new AccountLinkingService($config, $transport);
 
 // ── probe: access-token TTL ────────────────────────────────────────────
-// We re-issue the /access-token request directly (bypassing the cache)
-// so we can read the gateway's expiresIn verbatim.
+// We re-issue the /access-token/b2b request directly (bypassing the
+// cache) so we can read the gateway's expiresIn verbatim.
 $tokenProbe = probeAccessToken($config, $headerBuilder);
 
-// ── probe: each AuthCapture path ───────────────────────────────────────
-// Use a fresh access token via the normal Transport path so the body-hash
-// + signature dance is exactly what the SDK produces in production.
-$probePaths = [
-    'authorize'      => '/v1.0/auth/payment-host-to-host',
-    'capture'        => '/v1.0/auth/capture',
-    'void'           => '/v1.0/auth/void',
-    'refund'         => '/v1.0/auth/refund',          // ← design-doc pinned
-    'queryAuth'      => '/v1.0/auth/status',
-    'queryCapture'   => '/v1.0/auth/capture/status',
-    'queryVoid'      => '/v1.0/auth/void/status',
-];
+// ── probe: flow (get-auth-code → bind → debit → status) ────────────────
+// Each step chains into the next: bind's accountToken feeds debit's
+// body, debit's partnerReferenceNo feeds the status query.
+//
+// When the user-provided env var for a step is empty, a placeholder
+// value is sent so the gateway still validates the path; classification
+// surfaces whether the path itself is real.
+$flow = [];
 
-$pathResults = [];
-foreach ($probePaths as $label => $path) {
-    $pathResults[$label] = probePath($transport, $label, $path);
-}
+// 1. get-auth-code: signed server-to-server GET (NOT a pure browser URL —
+//    the gateway requires the full SNAP-BI signed header set on this
+//    endpoint, surfacing as 4001002 "Invalid Mandatory Field" otherwise).
+$flow['getAuthCode'] = probeGetAuthCode($accountLinking, $config, $headerBuilder, $atm);
 
-// ── probe: cross-check known-good paths ────────────────────────────────
-// Confirms the probe itself works — these paths are already verified by
-// the unit test suite via mocked transports, but if the sandbox is having
-// a bad day we want to know before reading too much into the AuthCapture
-// results.
-$controlPaths = [
-    'lap-create'   => '/v1.1/debit/payment-host-to-host',
-    'lap-status'   => '/v1.0/debit/status',
-    'lap-refund'   => '/v1.0/debit/refund',
-];
-$controlResults = [];
-foreach ($controlPaths as $label => $path) {
-    $controlResults[$label] = probePath($transport, $label, $path);
-}
+// 2. registration-account-binding
+$envAuthCode = (string) (getenv('SHOPEEPAY_AUTH_CODE') ?: '');
+$flow['bind'] = probeBind($transport, $envAuthCode);
+
+$accountToken = ($flow['bind']['accountToken'] ?? '')
+    ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
+
+// 3. debit/payment-host-to-host
+$debitRef     = 'PROBE-DEBIT-' . bin2hex(random_bytes(4));
+$flow['debit'] = probeDebit($transport, $debitRef, $accountToken);
+
+// 4. debit/status — query the debit just attempted (or the dummy ref
+//    when the debit didn't actually create a row).
+$statusRef = ($flow['debit']['responseReferenceNo'] ?? '') ?: $debitRef;
+$flow['debitStatus'] = probeDebitStatus($transport, $statusRef);
 
 // ── report ─────────────────────────────────────────────────────────────
 $report = [
@@ -169,13 +174,7 @@ $report = [
     'channelId'      => $config->channelId,
     'configTokenTtl' => $config->tokenTtlSeconds,
     'tokenProbe'     => $tokenProbe,
-    'authPaths'      => $pathResults,
-    'controlPaths'   => $controlResults,
-    'notes'          => [
-        'refundWindow' => 'Not directly probable — needs a real settled capture. '
-                        . 'If you have one in your sandbox, attempt refund() at varying ages '
-                        . 'and pin the smallest age that surfaces a "too old" responseCode.',
-    ],
+    'flow'           => $flow,
 ];
 
 if ($jsonOutput) {
@@ -247,25 +246,191 @@ function probeAccessToken(Config $config, HeaderBuilder $headerBuilder): array
 }
 
 /**
+ * Build the consent URL and GET it as a signed SNAP-BI request.
+ *
+ * Empirically (4001002 "invalid header: X-PARTNER-ID=[]"), the
+ * /v1.0/get-auth-code endpoint requires the full SNAP-BI transaction
+ * header set: X-PARTNER-ID, X-EXTERNAL-ID, X-TIMESTAMP, X-SIGNATURE,
+ * CHANNEL-ID, Authorization Bearer. So this is NOT a plain
+ * browser-redirect target — the merchant's server calls it, and the
+ * response (or response body) indicates where to redirect the user.
+ *
+ * Body for the signature is the empty string (GET has no body); the
+ * path-with-query goes into stringToSign.
+ *
+ * @return array{path: string, url: string, classification: string,
+ *               httpStatus: ?int, contentType: string, raw: string}
+ */
+function probeGetAuthCode(
+    AccountLinkingService $svc,
+    Config $config,
+    HeaderBuilder $headerBuilder,
+    AccessTokenManager $atm,
+): array {
+    $request = new GetAuthCodeRequest(
+        redirectUrl: 'https://localhost/probe-callback',
+        state:       GetAuthCodeRequest::generateState(),
+        scopes:      ['ACCOUNT_BINDING'],
+    );
+    $url = $svc->buildAuthCodeUrl($request);
+
+    // SNAP-BI signs the path-with-query for GET, body is "" (no body).
+    //
+    // Quirk: ShopeePay's gateway URL-decodes the query string and then
+    // re-encodes the WHOLE thing as a single value before folding it
+    // into stringToSign — so every "=" becomes "%3D" and every "&"
+    // becomes "%26" (and ":" "/" inside redirectUrl become "%3A" "%2F").
+    // Verified by reading section "Get Sign Url Result" of the
+    // gateway's /show_openapi_sign_debug_info debug page.
+    $parsed = parse_url($url) ?: [];
+    $path   = $parsed['path'] ?? '/v1.0/get-auth-code';
+    $relativeUrl = isset($parsed['query']) && $parsed['query'] !== ''
+        ? $path . '?' . rawurlencode(urldecode($parsed['query']))
+        : $path;
+
+    try {
+        $accessToken = $atm->get();
+    } catch (\Throwable $e) {
+        return [
+            'path'           => '/v1.0/get-auth-code',
+            'url'            => $url,
+            'classification' => 'indeterminate-network',
+            'httpStatus'     => null,
+            'contentType'    => '',
+            'raw'            => 'access-token unavailable: ' . $e->getMessage(),
+        ];
+    }
+
+    $built = $headerBuilder->transactionHeaders(
+        method:       'GET',
+        path:         $relativeUrl,
+        accessToken:  $accessToken,
+        minifiedBody: '',
+    );
+
+    $httpReq = $config->requestFactory->createRequest('GET', $url);
+    foreach ($built['headers'] as $h => $v) {
+        $httpReq = $httpReq->withHeader($h, $v);
+    }
+
+    try {
+        $response = $config->httpClient->sendRequest($httpReq);
+    } catch (\Psr\Http\Client\ClientExceptionInterface $e) {
+        return [
+            'path'           => '/v1.0/get-auth-code',
+            'url'            => $url,
+            'classification' => 'indeterminate-network',
+            'httpStatus'     => null,
+            'contentType'    => '',
+            'raw'            => $e->getMessage(),
+        ];
+    }
+
+    $status = $response->getStatusCode();
+    $ctype  = $response->getHeaderLine('Content-Type');
+    $body   = (string) $response->getBody();
+
+    // For a JSON-shaped response, peek at responseCode to classify.
+    $rcode = '';
+    if (str_starts_with($ctype, 'application/json')) {
+        $decoded = json_decode($body, true);
+        if (is_array($decoded) && is_string($decoded['responseCode'] ?? null)) {
+            $rcode = $decoded['responseCode'];
+        }
+    }
+
+    $classification = match (true) {
+        $status >= 200 && $status < 400                                 => 'success',
+        $status === 404 && str_starts_with($ctype, 'text/plain')        => 'may-be-wrong-path',
+        $rcode !== '' && preg_match('/^\d{3}00\d{2}$/', $rcode) === 1   => 'may-be-wrong-path',
+        $status >= 400                                                  => 'looks-valid-path',
+        default                                                         => 'indeterminate',
+    };
+
+    return [
+        'path'           => '/v1.0/get-auth-code',
+        'url'            => $url,
+        'classification' => $classification,
+        'httpStatus'     => $status,
+        'contentType'    => $ctype,
+        'raw'            => substr($body, 0, 400),
+    ];
+}
+
+/**
+ * @return array{path: string, classification: string, httpStatus: ?int,
+ *               responseCode: string, responseMessage: string,
+ *               accountToken: string, authCodeProvided: bool, raw: mixed}
+ */
+function probeBind(Transport $transport, string $authCode): array
+{
+    $body = [
+        'authCode'           => $authCode !== '' ? $authCode : 'PROBE-INVALID-AUTH-CODE',
+        'partnerReferenceNo' => 'PROBE-BIND-' . bin2hex(random_bytes(4)),
+    ];
+    $r = probeRequest($transport, '/v1.0/registration-account-binding', $body);
+
+    $accountToken = '';
+    if (is_array($r['raw']) && is_string($r['raw']['accountToken'] ?? null)) {
+        $accountToken = $r['raw']['accountToken'];
+    }
+    $r['accountToken']     = $accountToken;
+    $r['authCodeProvided'] = $authCode !== '';
+    return $r;
+}
+
+/**
+ * @return array{path: string, classification: string, httpStatus: ?int,
+ *               responseCode: string, responseMessage: string,
+ *               responseReferenceNo: string, accountTokenProvided: bool, raw: mixed}
+ */
+function probeDebit(Transport $transport, string $partnerReferenceNo, string $accountToken): array
+{
+    $body = [
+        'partnerReferenceNo' => $partnerReferenceNo,
+        'amount'             => ['value' => '1000.00', 'currency' => 'IDR'],
+        'accountToken'       => $accountToken !== '' ? $accountToken : 'PROBE-INVALID-ACCOUNT-TOKEN',
+    ];
+    $r = probeRequest($transport, '/v1.1/debit/payment-host-to-host', $body);
+
+    $refNo = '';
+    if (is_array($r['raw']) && is_string($r['raw']['partnerReferenceNo'] ?? null)) {
+        $refNo = $r['raw']['partnerReferenceNo'];
+    }
+    $r['responseReferenceNo']   = $refNo;
+    $r['accountTokenProvided']  = $accountToken !== '';
+    return $r;
+}
+
+/**
  * @return array{path: string, classification: string, httpStatus: ?int,
  *               responseCode: string, responseMessage: string, raw: mixed}
  */
-function probePath(Transport $transport, string $label, string $path): array
+function probeDebitStatus(Transport $transport, string $partnerReferenceNo): array
 {
-    // Send a body that's syntactically minimal but semantically incomplete.
-    // The gateway should respond with a validation-shaped error if the path
-    // is real, or a 404/not-found-shaped error if the path is wrong.
     $body = [
-        'partnerReferenceNo' => 'PROBE-' . bin2hex(random_bytes(4)),
+        'serviceCode'                => '54',
+        'originalPartnerReferenceNo' => $partnerReferenceNo,
     ];
+    return probeRequest($transport, '/v1.0/debit/status', $body);
+}
 
+/**
+ * Generic POST-and-classify helper. The caller controls the body so
+ * each step can send the shape the gateway expects.
+ *
+ * @param array<string, mixed> $body
+ * @return array{path: string, classification: string, httpStatus: ?int,
+ *               responseCode: string, responseMessage: string, raw: mixed}
+ */
+function probeRequest(Transport $transport, string $path, array $body): array
+{
     try {
         $decoded = $transport->send(method: 'POST', path: $path, body: $body);
 
-        // Unexpected success — the gateway accepted a minimal body. Log it.
         return [
             'path'            => $path,
-            'classification'  => 'unexpected-success',
+            'classification'  => 'success',
             'httpStatus'      => 200,
             'responseCode'    => is_string($decoded['responseCode'] ?? null) ? $decoded['responseCode'] : '',
             'responseMessage' => is_string($decoded['responseMessage'] ?? null) ? $decoded['responseMessage'] : '',
@@ -323,7 +488,6 @@ function classifyApiException(ApiException $e): string
         }
     }
 
-    // Fall back to message inspection.
     if (str_contains($message, 'not found') || str_contains($message, 'no service')
         || str_contains($message, 'invalid path')) {
         return 'may-be-wrong-path';
@@ -396,13 +560,8 @@ function printReport(array $report): void
             echo "⚠  Gateway did not return expiresIn — keeping {$report['configTokenTtl']}s default.\n";
         }
     } else {
-        echo "✗ No access token in response. channelId acceptance and path probes\n";
-        echo "  below will all fail until creds/signature/keys are correct.\n";
-
-        // Dump the raw body so the failure is actionable. When `raw` is a
-        // string the gateway returned non-JSON (probably an HTML 404 from an
-        // edge proxy — base URL or path wrong). When it's an array it's a
-        // SNAP-BI envelope shape we didn't recognize.
+        echo "✗ No access token in response. Flow probes below will all\n";
+        echo "  fail until creds/signature/keys are correct.\n";
         echo "\n  Raw response body (first 400 chars):\n";
         $raw = $tp['raw'];
         $rawStr = is_array($raw)
@@ -416,36 +575,48 @@ function printReport(array $report): void
     }
     echo "\n";
 
-    echo "--- AuthCapture Path Probe (6 guessed + 1 pinned) ---\n";
-    foreach ($report['authPaths'] as $label => $r) {
-        echo sprintf(
-            "  %-15s %-32s  %-22s  %s\n",
-            $label,
-            $r['path'],
-            $r['classification'],
-            ($r['responseCode'] ?: '?') . ' ' . trim((string) $r['responseMessage']),
-        );
-    }
-    echo "\n";
+    echo "--- Flow Probe ---\n";
 
-    echo "--- Control: known-good Link & Pay paths ---\n";
-    foreach ($report['controlPaths'] as $label => $r) {
-        echo sprintf(
-            "  %-15s %-40s  %s\n",
-            $label,
-            $r['path'],
-            $r['classification'],
-        );
+    $ga = $report['flow']['getAuthCode'];
+    echo sprintf("1. get-auth-code           %s  (HTTP %s)\n",
+        $ga['classification'], $ga['httpStatus'] ?? '?');
+    echo "   URL: " . $ga['url'] . "\n";
+    echo "   Content-Type: " . ($ga['contentType'] ?: '(none)') . "\n";
+    // Dump the body when the gateway returned a non-redirect error. The
+    // payload usually names the missing/invalid query param, which is
+    // exactly what we need to debug a 400.
+    $gaStatus = $ga['httpStatus'] ?? 0;
+    if ($gaStatus !== null && ($gaStatus < 200 || $gaStatus >= 400) && $ga['raw'] !== '') {
+        echo "   Body (first 400 chars):\n";
+        echo "     " . str_replace("\n", "\n     ", $ga['raw']) . "\n";
     }
-    echo "\n";
 
-    echo "--- Notes ---\n";
-    foreach ($report['notes'] as $k => $v) {
-        echo "  • $k: $v\n";
+    $bp = $report['flow']['bind'];
+    echo sprintf("\n2. registration-account-binding   %s  (HTTP %s)\n",
+        $bp['classification'], $bp['httpStatus'] ?? '?');
+    echo "   path: {$bp['path']}\n";
+    echo "   " . ($bp['responseCode'] ?: '?') . ' ' . trim((string) $bp['responseMessage']) . "\n";
+    echo "   authCode supplied via env: " . ($bp['authCodeProvided'] ? 'yes' : 'no — used dummy') . "\n";
+    if ($bp['accountToken'] !== '') {
+        echo "   ✓ accountToken received → chained into debit\n";
     }
-    echo "\n";
 
+    $dp = $report['flow']['debit'];
+    echo sprintf("\n3. debit/payment-host-to-host    %s  (HTTP %s)\n",
+        $dp['classification'], $dp['httpStatus'] ?? '?');
+    echo "   path: {$dp['path']}\n";
+    echo "   " . ($dp['responseCode'] ?: '?') . ' ' . trim((string) $dp['responseMessage']) . "\n";
+    echo "   accountToken supplied: " . ($dp['accountTokenProvided'] ? 'yes' : 'no — used dummy') . "\n";
+
+    $sp = $report['flow']['debitStatus'];
+    echo sprintf("\n4. debit/status                  %s  (HTTP %s)\n",
+        $sp['classification'], $sp['httpStatus'] ?? '?');
+    echo "   path: {$sp['path']}\n";
+    echo "   " . ($sp['responseCode'] ?: '?') . ' ' . trim((string) $sp['responseMessage']) . "\n";
+
+    echo "\n";
     echo "=== End of report ===\n";
-    echo "\nNext: if any AuthCapture path classifies as 'may-be-wrong-path',\n";
-    echo "update the corresponding PATH_* const in src/Service/AuthCaptureService.php.\n";
+    echo "\nLegend: success | looks-valid-path | may-be-wrong-path | indeterminate-*\n";
+    echo "Anything classified 'may-be-wrong-path' indicates the corresponding\n";
+    echo "PATH_* const in src/Service/*.php should be updated.\n";
 }
