@@ -47,9 +47,12 @@ declare(strict_types=1);
  *   php scripts/probe-sandbox.php --production       # asks for confirmation
  *   php scripts/probe-sandbox.php --json             # report as JSON
  *
- * Required env vars (same as examples/_bootstrap.php):
- *   SHOPEEPAY_CLIENT_ID, SHOPEEPAY_CLIENT_SECRET, SHOPEEPAY_MERCHANT_ID,
- *   SHOPEEPAY_PRIVATE_KEY_PATH, SHOPEEPAY_PUBLIC_KEY_PATH
+ * Env vars (same convention as .env.example / examples/_bootstrap.php):
+ *   SHOPEEPAY_CLIENT_ID, SHOPEEPAY_SECRET_KEY, SHOPEEPAY_CWS_MERCHANT_ID,
+ *   and ONE of each key pair — SHOPEEPAY_PRIVATE_KEY (PEM string) or
+ *   SHOPEEPAY_PRIVATE_KEY_PATH (file path); SHOPEEPAY_PUBLIC_KEY or
+ *   SHOPEEPAY_PUBLIC_KEY_PATH.
+ *   Optional: SHOPEEPAY_CWS_STORE_ID.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -83,37 +86,37 @@ if ($production) {
 }
 
 // ── env loading ────────────────────────────────────────────────────────
-$required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_CLIENT_SECRET', 'SHOPEEPAY_MERCHANT_ID',
-             'SHOPEEPAY_PRIVATE_KEY_PATH', 'SHOPEEPAY_PUBLIC_KEY_PATH'];
+$required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_SECRET_KEY', 'SHOPEEPAY_CWS_MERCHANT_ID'];
 foreach ($required as $var) {
     if (getenv($var) === false || getenv($var) === '') {
-        fwrite(STDERR, "Missing env var: $var. See examples/_bootstrap.php for the full list.\n");
+        fwrite(STDERR, "Missing env var: $var. See .env.example for the full list.\n");
         exit(1);
     }
 }
-$privateKey = file_get_contents((string) getenv('SHOPEEPAY_PRIVATE_KEY_PATH'));
-$publicKey  = file_get_contents((string) getenv('SHOPEEPAY_PUBLIC_KEY_PATH'));
-if ($privateKey === false || $publicKey === false) {
-    fwrite(STDERR, "Could not read key file(s).\n");
-    exit(1);
-}
+$privateKey = probe_load_pem('SHOPEEPAY_PRIVATE_KEY', 'SHOPEEPAY_PRIVATE_KEY_PATH');
+$publicKey  = probe_load_pem('SHOPEEPAY_PUBLIC_KEY',  'SHOPEEPAY_PUBLIC_KEY_PATH');
 
 // ── bootstrap ──────────────────────────────────────────────────────────
 $psr17      = new Psr17Factory();
 $httpClient = \Http\Discovery\Psr18ClientDiscovery::find();
 $cache      = new Psr16Cache(new ArrayAdapter());
 
+$envFromFlag = $production
+    || strtolower((string) getenv('SHOPEEPAY_IS_PRODUCTION')) === 'true';
+$storeId     = ((string) getenv('SHOPEEPAY_CWS_STORE_ID')) ?: null;
+
 $config = new Config(
     clientId:           (string) getenv('SHOPEEPAY_CLIENT_ID'),
-    clientSecret:       (string) getenv('SHOPEEPAY_CLIENT_SECRET'),
+    clientSecret:       (string) getenv('SHOPEEPAY_SECRET_KEY'),
     privateKey:         $privateKey,
     shopeepayPublicKey: $publicKey,
-    merchantId:         (string) getenv('SHOPEEPAY_MERCHANT_ID'),
+    merchantId:         (string) getenv('SHOPEEPAY_CWS_MERCHANT_ID'),
     httpClient:         $httpClient,
     requestFactory:     $psr17,
     streamFactory:      $psr17,
     cache:              $cache,
-    environment:        $production ? Environment::PRODUCTION : Environment::SANDBOX,
+    environment:        $envFromFlag ? Environment::PRODUCTION : Environment::SANDBOX,
+    storeId:            $storeId,
 );
 
 $signer        = new Signer();
@@ -335,6 +338,31 @@ function extractHttpStatus(string $responseCode): ?int
         return (int) $m[1];
     }
     return null;
+}
+
+/**
+ * Resolve a PEM from either a direct env var (the value IS the PEM) or a
+ * `_PATH`-suffixed env var pointing to a file on disk.
+ */
+function probe_load_pem(string $pemVar, string $pathVar): string
+{
+    $direct = (string) getenv($pemVar);
+    if (str_contains($direct, '-----BEGIN')) {
+        return $direct;
+    }
+
+    $path = (string) getenv($pathVar);
+    if ($path === '') {
+        fwrite(STDERR, "Set $pemVar (PEM string) or $pathVar (file path).\n");
+        exit(1);
+    }
+
+    $contents = @file_get_contents($path);
+    if ($contents === false) {
+        fwrite(STDERR, "Could not read $pathVar at $path\n");
+        exit(1);
+    }
+    return $contents;
 }
 
 /**

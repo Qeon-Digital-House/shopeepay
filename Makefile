@@ -58,11 +58,14 @@ matrix:
 
 # Empirical sandbox probe. Confirms /v1.0/auth/* paths, access-token TTL,
 # and channelId acceptance against the live sandbox. Requires SHOPEEPAY_*
-# env vars (see examples/_bootstrap.php). Read-only — sends only probe
-# bodies that the gateway rejects with validation errors.
+# env vars (see .env.example). Read-only — sends only probe bodies that
+# the gateway rejects with validation errors.
 probe: build
-	$(RUN) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_CLIENT_SECRET -e SHOPEEPAY_MERCHANT_ID \
+	$(RUN) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_SECRET_KEY \
+	       -e SHOPEEPAY_CWS_MERCHANT_ID -e SHOPEEPAY_CWS_STORE_ID \
+	       -e SHOPEEPAY_PRIVATE_KEY -e SHOPEEPAY_PUBLIC_KEY \
 	       -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
+	       -e SHOPEEPAY_IS_PRODUCTION \
 	       php php scripts/probe-sandbox.php
 
 clean:

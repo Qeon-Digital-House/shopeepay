@@ -346,9 +346,10 @@ Five runnable scripts plus a shared bootstrap:
 | [`examples/04-auth-capture.php`](examples/04-auth-capture.php)         | Authorize → query → capture → refund (and the void branch)   |
 | [`examples/05-webhook-handler.php`](examples/05-webhook-handler.php)   | Raw-body buffering, signature errors, `UnknownEvent` arm     |
 
-To run: set the `SHOPEEPAY_*` env vars (see [`.env.example`](.env.example)) plus
-`SHOPEEPAY_PRIVATE_KEY_PATH` and `SHOPEEPAY_PUBLIC_KEY_PATH` (the bootstrap reads
-PEMs from files for shell-friendliness), then `php examples/02-link-and-pay.php`.
+To run: set the `SHOPEEPAY_*` env vars (see [`.env.example`](.env.example)).
+PEMs can be passed inline via `SHOPEEPAY_PRIVATE_KEY` / `SHOPEEPAY_PUBLIC_KEY`,
+or as file paths via `SHOPEEPAY_PRIVATE_KEY_PATH` / `SHOPEEPAY_PUBLIC_KEY_PATH`
+(shell-friendly fallback). Then: `php examples/02-link-and-pay.php`.
 
 ## Development
 
@@ -391,10 +392,11 @@ errors before any state mutation.
 
 ```bash
 export SHOPEEPAY_CLIENT_ID=...
-export SHOPEEPAY_CLIENT_SECRET=...
-export SHOPEEPAY_MERCHANT_ID=...
+export SHOPEEPAY_SECRET_KEY=...
+export SHOPEEPAY_CWS_MERCHANT_ID=...
 export SHOPEEPAY_PRIVATE_KEY_PATH=./.keys/merchant-private.pem
 export SHOPEEPAY_PUBLIC_KEY_PATH=./.keys/shopeepay-public.pem
+# (or pass PEMs inline via SHOPEEPAY_PRIVATE_KEY / SHOPEEPAY_PUBLIC_KEY)
 
 make probe                       # human-readable report
 php scripts/probe-sandbox.php --json   # JSON report (host PHP)
