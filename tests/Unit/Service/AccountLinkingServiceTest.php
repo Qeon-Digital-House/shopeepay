@@ -50,7 +50,9 @@ final class AccountLinkingServiceTest extends TestCase
         self::assertSame('M1234',                                     $q['merchantId']         ?? null);
         self::assertSame('abc123',                                    $q['state']              ?? null);
         self::assertSame('https://merchant.example/oauth/callback',   $q['redirectUrl']        ?? null);
-        self::assertSame('95221',                                     $q['channelId']          ?? null);
+        // channelId is sent as the CHANNEL-ID header by Transport, not as a
+        // query param on /v1.0/get-auth-code.
+        self::assertArrayNotHasKey('channelId', $q);
         self::assertArrayNotHasKey('scopes', $q); // not requested → omitted
     }
 
@@ -84,6 +86,22 @@ final class AccountLinkingServiceTest extends TestCase
         ));
 
         self::assertStringContainsString('scopes=PAYMENT%2CREFUND', $url);
+    }
+
+    public function testBuildAuthCodeUrlOmitsPartnerReferenceNoWhenNull(): void
+    {
+        // SNAP BI does not require partnerReferenceNo on /v1.0/get-auth-code.
+        // When the caller omits it, it must NOT appear in the query string.
+        [$service] = $this->build();
+        $url = $service->buildAuthCodeUrl(new GetAuthCodeRequest(
+            redirectUrl: 'https://merchant.example/cb',
+            state:       'st-omit',
+            scopes:      ['ACCOUNT_BINDING'],
+        ));
+
+        parse_str(parse_url($url, PHP_URL_QUERY) ?: '', $q);
+        self::assertArrayNotHasKey('partnerReferenceNo', $q);
+        self::assertSame('ACCOUNT_BINDING', $q['scopes'] ?? null);
     }
 
     public function testGenerateStateReturns32HexChars(): void

@@ -56,13 +56,17 @@ final class AccountLinkingService
      */
     public function buildAuthCodeUrl(GetAuthCodeRequest $request): string
     {
+        // channelId is sent as the CHANNEL-ID header, not as a query param.
+        // partnerReferenceNo is optional on this endpoint — included only
+        // when the caller explicitly supplied one.
         $params = [
-            'partnerReferenceNo' => $request->partnerReferenceNo,
-            'merchantId'         => $request->merchantId ?? $this->config->merchantId,
-            'state'              => $request->state,
-            'redirectUrl'        => $request->redirectUrl,
-            'channelId'          => $this->config->channelId,
+            'merchantId'  => $request->merchantId ?? $this->config->merchantId,
+            'state'       => $request->state,
+            'redirectUrl' => $request->redirectUrl,
         ];
+        if ($request->partnerReferenceNo !== null) {
+            $params['partnerReferenceNo'] = $request->partnerReferenceNo;
+        }
         if ($request->scopes !== []) {
             $params['scopes'] = implode(',', $request->scopes);
         }

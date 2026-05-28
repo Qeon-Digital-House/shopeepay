@@ -31,20 +31,25 @@ final class GetAuthCodeRequest
 
     public readonly string $redirectUrl;
     public readonly string $state;
-    public readonly string $partnerReferenceNo;
+    public readonly ?string $partnerReferenceNo;
     public readonly ?string $merchantId;
 
     /** @var list<string> */
     public readonly array $scopes;
 
     /**
-     * @param list<string> $scopes  Permission scopes to request. Pass an
-     *                              empty list to send no `scopes` param.
+     * @param ?string      $partnerReferenceNo  Optional. SNAP BI does not
+     *                                          require this on /v1.0/get-auth-code;
+     *                                          omitted from the URL when null.
+     * @param list<string> $scopes              Permission scopes to request
+     *                                          (e.g. `['ACCOUNT_BINDING']`).
+     *                                          Pass an empty list to send no
+     *                                          `scopes` param.
      */
     public function __construct(
         string $redirectUrl,
         string $state,
-        string $partnerReferenceNo,
+        ?string $partnerReferenceNo = null,
         ?string $merchantId = null,
         array $scopes = [],
     ) {
@@ -67,8 +72,10 @@ final class GetAuthCodeRequest
                 strlen($state),
             ));
         }
-        if (trim($partnerReferenceNo) === '') {
-            throw new InvalidArgumentException('partnerReferenceNo must not be empty');
+        if ($partnerReferenceNo !== null && trim($partnerReferenceNo) === '') {
+            throw new InvalidArgumentException(
+                'partnerReferenceNo must be null or non-empty (not a whitespace string)',
+            );
         }
         foreach ($scopes as $i => $scope) {
             if (!is_string($scope) || trim($scope) === '') {
