@@ -1,6 +1,6 @@
 # Current State — ShopeePay PHP SDK
 
-**Snapshot:** 2026-05-25 (post-Subscription). Handoff doc for a fresh Claude session.
+**Snapshot:** 2026-05-28 (post-README). Handoff doc for a fresh Claude session.
 
 ## What this project is
 
@@ -15,12 +15,13 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
 
 - **Design phase complete.** Plan reviewed via `/office-hours` + `/plan-eng-review`.
 - **Spec review passed:** 2 iterations, final score 8.5/10.
-- **Build-order steps 1–7 done** (scaffold, kernel, transport+token, webhook,
-  AccountLinking, LinkAndPay, Subscription). Branch `scaffold-shopeepay-sdk`
-  at `7d9e499`. 122 unit tests pass, phpstan level 8 clean.
-- **Next:** build-order step 8 — `Service/AuthCaptureService` + its DTOs
-  (authorize/capture/void/refund + query{Auth,Capture,Void}; svc 63/65/67/69
-  + 64/66/68).
+- **Build-order steps 1–10 done** (scaffold, kernel, transport+token,
+  webhook, AccountLinking, LinkAndPay, Subscription, AuthCapture,
+  Examples, README). Branch `scaffold-shopeepay-sdk`. 136 unit tests pass,
+  phpstan level 8 clean, all examples parse clean.
+- **Next:** build-order step 11 — sandbox probe to confirm the 6 guessed
+  `/v1.0/auth/*` paths, the access-token TTL (currently 14 min default),
+  and refund time windows. Then 0.1.0 release (step 12).
 
 ## Source-of-truth files
 
@@ -113,15 +114,36 @@ fixtures in `tests/fixtures/` (test-only PEM key pair).
    on a required `subscriptionId` field. Notify lands on svc 52 (handled by
    existing `Webhook\EventFactory` dispatch). DTOs kept split from LinkAndPay
    per locked decision #4 — the refund DTO already diverges (subscriptionId).
-8. ⏭ **AuthCaptureService** + DTOs — START HERE. Largest service of the four:
-   authorize/capture/void/refund + three query ops. State machine constraints
-   (one partial capture per auth, void before capture, refund after capture)
-   are documented but not client-enforced in v1.
-7. **SubscriptionService** + DTOs.
-8. **AuthCaptureService** + DTOs. (Services 5–8 can be parallelized in worktrees.)
-9. Examples (one runnable per flow).
-10. README quickstart + per-flow guide.
-11. **Sandbox probe** — confirm access-token TTL (design assumes 14 min) + refund windows.
+8. ✅ **AuthCaptureService** + 14 DTOs — authorize/capture/void/refund +
+   queryAuth/queryCapture/queryVoid (svc 63/65/67/69 + 64/66/68). Paths
+   under `/v1.0/auth/*`; only `/v1.0/auth/refund` is pinned by the design
+   doc, the rest are SNAP-BI-convention guesses (asserted in tests so the
+   sandbox probe in step 11 surfaces mismatches loudly). State-machine
+   constraints documented in DTO PHPDoc but NOT client-enforced — gateway
+   is the source of truth and surfaces violations as `ApiException`.
+9. ✅ **Examples** — 5 runnable scripts + a shared `_bootstrap.php` under
+   `examples/`. Each script uses env vars for creds, short-circuits cleanly
+   when they're absent, and demonstrates the polling cadence the SDK
+   refuses to bake in (5s × 20 then 5m × 6). The webhook example carries
+   the **`UnknownEvent` match arm** the design doc flagged as the critical
+   docs gap. Bootstrap uses `Http\Discovery\Psr18ClientDiscovery::find()`
+   so any PSR-18 client works (`composer require symfony/http-client`
+   recommended). All 6 files lint clean.
+10. ✅ **README** — install, quickstart with full PSR wiring (no facade),
+    per-flow guide with one minimal snippet each, webhook section
+    re-emphasizing the mandatory `UnknownEvent` match arm, errors table,
+    `Config` field reference, and a table cross-linking the 5 example
+    scripts. Existing references to a `ShopeePay` facade were stripped
+    since none exists yet — the v2 Laravel companion package is where
+    that ergonomic surface will live.
+11. ⏭ **Sandbox probe** — START HERE. Empirically confirm:
+    - the 6 SNAP-BI-convention `/v1.0/auth/*` paths (only
+      `/v1.0/auth/refund` is design-doc-pinned),
+    - access-token TTL (assumed 14 min — `Config::$tokenTtlSeconds`),
+    - debit refund window (svc 58),
+    - that `channelId='95221'` is accepted across all four flows.
+    Update the corresponding consts in `Config` and the service paths
+    if the probe surfaces mismatches.
 12. **Release 0.1.0** to Packagist via tag-triggered workflow.
 
 ## Known critical gap to mitigate during impl
@@ -159,5 +181,5 @@ enforcement, concurrent token-refresh mutex.
 ```
 Read /home/qdh/RRQ/shopeepay/current_state.md, then
 ~/.gstack/projects/shopeepay/qdh-init-design-20260525-151513.md.
-Resume at build-order step 8 (AuthCaptureService).
+Resume at build-order step 11 (sandbox probe).
 ```
