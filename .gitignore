@@ -10,6 +10,7 @@
 /.vscode/
 /.env
 /.env.local
+/.keys/
 .DS_Store
 /coverage/
 /build/

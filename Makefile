@@ -24,7 +24,7 @@ ENV          = PHP_VERSION=$(PHP_VERSION) DOCKER_UID=$$(id -u) DOCKER_GID=$$(id 
 COMPOSE      = $(ENV) docker compose -f .docker/docker-compose.dev.yml -p shopeepay-dev-$(PHP_SLUG)
 RUN          = $(COMPOSE) run --rm --entrypoint "" php
 
-.PHONY: build install update test coverage test-integration phpstan shell matrix clean
+.PHONY: build install update test coverage test-integration phpstan shell matrix probe clean
 
 build:
 	$(COMPOSE) build
@@ -55,6 +55,15 @@ matrix:
 	  echo "===> PHP $$v" ; \
 	  $(MAKE) test PHP_VERSION=$$v || exit 1 ; \
 	done
+
+# Empirical sandbox probe. Confirms /v1.0/auth/* paths, access-token TTL,
+# and channelId acceptance against the live sandbox. Requires SHOPEEPAY_*
+# env vars (see examples/_bootstrap.php). Read-only — sends only probe
+# bodies that the gateway rejects with validation errors.
+probe: build
+	$(RUN) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_CLIENT_SECRET -e SHOPEEPAY_MERCHANT_ID \
+	       -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
+	       php php scripts/probe-sandbox.php
 
 clean:
 	rm -rf vendor composer.lock .phpunit.cache .phpunit.result.cache coverage
