@@ -1,0 +1,17 @@
+/vendor/
+/composer.lock
+/.composer-cache/
+/.phpunit.cache/
+/.phpunit.result.cache
+/.phpstan.cache/
+/phpunit.xml
+/phpstan.neon.local
+/.idea/
+/.vscode/
+/.env
+/.env.local
+/.keys/
+.DS_Store
+/coverage/
+/build/
+/.composer-cache/

@@ -1,0 +1,21 @@
+services:
+  php:
+    build:
+      context: ..
+      dockerfile: .docker/Dockerfile.dev
+      args:
+        PHP_VERSION: "${PHP_VERSION:-8.1}"
+    image: shopeepay-dev:${PHP_VERSION:-8.1}
+    container_name: shopeepay-dev
+    working_dir: /app
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    volumes:
+      - ..:/app
+    environment:
+      # Keep the composer cache inside the bind-mounted project so it persists
+      # across `--rm` and is owned by the host user, not root.
+      COMPOSER_HOME: /app/.composer-cache
+      COMPOSER_CACHE_DIR: /app/.composer-cache/cache
+    # Default no-op so the container does not start on `up`; we exec one-shot
+    # commands via `docker compose run --rm php <cmd>`.
+    entrypoint: ["php"]
