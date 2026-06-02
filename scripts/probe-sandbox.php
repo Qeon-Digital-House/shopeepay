@@ -152,8 +152,13 @@ $flow = [];
 $flow['getAuthCode'] = probeGetAuthCode($accountLinking, $config, $headerBuilder, $atm);
 
 // 2. registration-account-binding
-$envAuthCode = (string) (getenv('SHOPEEPAY_AUTH_CODE') ?: '');
-$flow['bind'] = probeBind($transport, $envAuthCode);
+//    authCode comes from get-auth-code's response when it succeeds; an
+//    explicit SHOPEEPAY_AUTH_CODE env wins (e.g. a code captured from a
+//    real browser-consent redirect), and probeBind falls back to a
+//    placeholder when neither is available.
+$authCode = (string) (getenv('SHOPEEPAY_AUTH_CODE') ?: '')
+    ?: ($flow['getAuthCode']['authCode'] ?? '');
+$flow['bind'] = probeBind($transport, $config->merchantId, $authCode);
 
 $accountToken = ($flow['bind']['accountToken'] ?? '')
     ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
@@ -259,7 +264,7 @@ function probeAccessToken(Config $config, HeaderBuilder $headerBuilder): array
  * path-with-query goes into stringToSign.
  *
  * @return array{path: string, url: string, classification: string,
- *               httpStatus: ?int, contentType: string, raw: string}
+ *               httpStatus: ?int, contentType: string, authCode: string, raw: string}
  */
 function probeGetAuthCode(
     AccountLinkingService $svc,
@@ -297,6 +302,7 @@ function probeGetAuthCode(
             'classification' => 'indeterminate-network',
             'httpStatus'     => null,
             'contentType'    => '',
+            'authCode'       => '',
             'raw'            => 'access-token unavailable: ' . $e->getMessage(),
         ];
     }
@@ -322,6 +328,7 @@ function probeGetAuthCode(
             'classification' => 'indeterminate-network',
             'httpStatus'     => null,
             'contentType'    => '',
+            'authCode'       => '',
             'raw'            => $e->getMessage(),
         ];
     }
@@ -330,12 +337,21 @@ function probeGetAuthCode(
     $ctype  = $response->getHeaderLine('Content-Type');
     $body   = (string) $response->getBody();
 
-    // For a JSON-shaped response, peek at responseCode to classify.
-    $rcode = '';
+    // For a JSON-shaped response, peek at responseCode to classify and
+    // pull the authCode the gateway hands back. get-auth-code returns the
+    // authCode directly in its body (responseCode 2001000); that same code
+    // is what registration-account-binding consumes, so we chain it forward.
+    $rcode    = '';
+    $authCode = '';
     if (str_starts_with($ctype, 'application/json')) {
         $decoded = json_decode($body, true);
-        if (is_array($decoded) && is_string($decoded['responseCode'] ?? null)) {
-            $rcode = $decoded['responseCode'];
+        if (is_array($decoded)) {
+            if (is_string($decoded['responseCode'] ?? null)) {
+                $rcode = $decoded['responseCode'];
+            }
+            if (is_string($decoded['authCode'] ?? null)) {
+                $authCode = $decoded['authCode'];
+            }
         }
     }
 
@@ -353,6 +369,7 @@ function probeGetAuthCode(
         'classification' => $classification,
         'httpStatus'     => $status,
         'contentType'    => $ctype,
+        'authCode'       => $authCode,
         'raw'            => substr($body, 0, 400),
     ];
 }
@@ -362,12 +379,21 @@ function probeGetAuthCode(
  *               responseCode: string, responseMessage: string,
  *               accountToken: string, authCodeProvided: bool, raw: mixed}
  */
-function probeBind(Transport $transport, string $authCode): array
+function probeBind(Transport $transport, string $merchantId, string $authCode): array
 {
-    $body = [
-        'authCode'           => $authCode !== '' ? $authCode : 'PROBE-INVALID-AUTH-CODE',
-        'partnerReferenceNo' => 'PROBE-BIND-' . bin2hex(random_bytes(4)),
-    ];
+    // merchantId is a top-level mandatory field on this endpoint — the
+    // gateway rejects its absence with "4000702 Invalid Mandatory Field
+    // {merchantId}". authCode and partnerReferenceNo are mutually exclusive:
+    // the spec says EITHER one (not both). Sending both also trips 4000702
+    // ("Invalid Mandatory Field {authCode} or {partnerReferenceNo}"), so we
+    // send exactly one — the real authCode when we have it, otherwise a
+    // partnerReferenceNo to at least exercise the endpoint shape.
+    $body = ['merchantId' => $merchantId];
+    if ($authCode !== '') {
+        $body['authCode'] = $authCode;
+    } else {
+        $body['partnerReferenceNo'] = 'PROBE-BIND-' . bin2hex(random_bytes(4));
+    }
     $r = probeRequest($transport, '/v1.0/registration-account-binding', $body);
 
     $accountToken = '';
@@ -530,6 +556,29 @@ function probe_load_pem(string $pemVar, string $pathVar): string
 }
 
 /**
+ * Dump a probe step's raw response verbatim. Arrays (decoded JSON
+ * bodies) are pretty-printed; strings (error text, truncated bodies)
+ * are echoed as-is. Empty values print a placeholder so every step
+ * shows *something* for its response.
+ *
+ * @param array<string, mixed>|string|null $raw
+ */
+function printRawResponse(mixed $raw): void
+{
+    echo "   Raw response:\n";
+    if (is_array($raw)) {
+        $str = json_encode($raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } else {
+        $str = (string) $raw;
+    }
+    if (trim($str) === '') {
+        echo "     (empty)\n";
+        return;
+    }
+    echo "     " . str_replace("\n", "\n     ", $str) . "\n";
+}
+
+/**
  * @param array<string, mixed> $report
  */
 function printReport(array $report): void
@@ -582,14 +631,7 @@ function printReport(array $report): void
         $ga['classification'], $ga['httpStatus'] ?? '?');
     echo "   URL: " . $ga['url'] . "\n";
     echo "   Content-Type: " . ($ga['contentType'] ?: '(none)') . "\n";
-    // Dump the body when the gateway returned a non-redirect error. The
-    // payload usually names the missing/invalid query param, which is
-    // exactly what we need to debug a 400.
-    $gaStatus = $ga['httpStatus'] ?? 0;
-    if ($gaStatus !== null && ($gaStatus < 200 || $gaStatus >= 400) && $ga['raw'] !== '') {
-        echo "   Body (first 400 chars):\n";
-        echo "     " . str_replace("\n", "\n     ", $ga['raw']) . "\n";
-    }
+    printRawResponse($ga['raw']);
 
     $bp = $report['flow']['bind'];
     echo sprintf("\n2. registration-account-binding   %s  (HTTP %s)\n",
@@ -600,6 +642,7 @@ function printReport(array $report): void
     if ($bp['accountToken'] !== '') {
         echo "   ✓ accountToken received → chained into debit\n";
     }
+    printRawResponse($bp['raw']);
 
     $dp = $report['flow']['debit'];
     echo sprintf("\n3. debit/payment-host-to-host    %s  (HTTP %s)\n",
@@ -607,12 +650,14 @@ function printReport(array $report): void
     echo "   path: {$dp['path']}\n";
     echo "   " . ($dp['responseCode'] ?: '?') . ' ' . trim((string) $dp['responseMessage']) . "\n";
     echo "   accountToken supplied: " . ($dp['accountTokenProvided'] ? 'yes' : 'no — used dummy') . "\n";
+    printRawResponse($dp['raw']);
 
     $sp = $report['flow']['debitStatus'];
     echo sprintf("\n4. debit/status                  %s  (HTTP %s)\n",
         $sp['classification'], $sp['httpStatus'] ?? '?');
     echo "   path: {$sp['path']}\n";
     echo "   " . ($sp['responseCode'] ?: '?') . ' ' . trim((string) $sp['responseMessage']) . "\n";
+    printRawResponse($sp['raw']);
 
     echo "\n";
     echo "=== End of report ===\n";
