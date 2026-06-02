@@ -66,7 +66,7 @@ matrix:
 # the gateway rejects with validation errors.
 probe: build
 	$(RUN_BASE) -e SHOPEEPAY_CLIENT_ID -e SHOPEEPAY_SECRET_KEY \
-	            -e SHOPEEPAY_CWS_MERCHANT_ID -e SHOPEEPAY_CWS_STORE_ID \
+	            -e SHOPEEPAY_SUBS_MERCHANT_ID -e SHOPEEPAY_SUBS_STORE_ID \
 	            -e SHOPEEPAY_PRIVATE_KEY -e SHOPEEPAY_PUBLIC_KEY \
 	            -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
 	            -e SHOPEEPAY_IS_PRODUCTION \

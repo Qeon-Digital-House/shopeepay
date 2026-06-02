@@ -62,7 +62,7 @@ $config = new Config(
     clientSecret:       getenv('SHOPEEPAY_SECRET_KEY'),
     privateKey:         getenv('SHOPEEPAY_PRIVATE_KEY'),       // PEM string
     shopeepayPublicKey: getenv('SHOPEEPAY_PUBLIC_KEY'),        // PEM string
-    merchantId:         getenv('SHOPEEPAY_CWS_MERCHANT_ID'),
+    merchantId:         getenv('SHOPEEPAY_SUBS_MERCHANT_ID'),
     httpClient:         \Http\Discovery\Psr18ClientDiscovery::find(),
     requestFactory:     $psr17,
     streamFactory:      $psr17,
@@ -393,7 +393,7 @@ errors before any state mutation.
 ```bash
 export SHOPEEPAY_CLIENT_ID=...
 export SHOPEEPAY_SECRET_KEY=...
-export SHOPEEPAY_CWS_MERCHANT_ID=...
+export SHOPEEPAY_SUBS_MERCHANT_ID=...
 export SHOPEEPAY_PRIVATE_KEY_PATH=./.keys/merchant-private.pem
 export SHOPEEPAY_PUBLIC_KEY_PATH=./.keys/shopeepay-public.pem
 # (or pass PEMs inline via SHOPEEPAY_PRIVATE_KEY / SHOPEEPAY_PUBLIC_KEY)

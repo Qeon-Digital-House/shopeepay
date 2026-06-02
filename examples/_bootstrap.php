@@ -16,7 +16,7 @@ declare(strict_types=1);
  * Required:
  *   SHOPEEPAY_CLIENT_ID         — your client id (sandbox creds work)
  *   SHOPEEPAY_SECRET_KEY        — your client secret
- *   SHOPEEPAY_CWS_MERCHANT_ID   — your merchant id
+ *   SHOPEEPAY_SUBS_MERCHANT_ID   — your merchant id
  *
  * Keys — provide ONE of each pair (PEM-string form preferred; the *_PATH
  * forms are shell-friendly fallbacks read from disk):
@@ -26,7 +26,7 @@ declare(strict_types=1);
  *   SHOPEEPAY_PUBLIC_KEY_PATH   —   ...or path to the same PEM
  *
  * Optional:
- *   SHOPEEPAY_CWS_STORE_ID      — outlet id for multi-outlet merchants
+ *   SHOPEEPAY_SUBS_STORE_ID      — outlet id for multi-outlet merchants
  *   SHOPEEPAY_IS_PRODUCTION     — "true" → production, anything else → sandbox
  *   SHOPEEPAY_ACCOUNT_TOKEN     — required by examples 02/03/04 (a token
  *                                 from a prior successful bind())
@@ -55,7 +55,7 @@ use Symfony\Component\Cache\Psr16Cache;
 
 function shopeepay_example_bootstrap(): array
 {
-    $required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_SECRET_KEY', 'SHOPEEPAY_CWS_MERCHANT_ID'];
+    $required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_SECRET_KEY', 'SHOPEEPAY_SUBS_MERCHANT_ID'];
     foreach ($required as $var) {
         if (getenv($var) === false || getenv($var) === '') {
             fwrite(STDERR, sprintf(
@@ -83,14 +83,14 @@ function shopeepay_example_bootstrap(): array
     $environment = strtolower((string) getenv('SHOPEEPAY_IS_PRODUCTION')) === 'true'
         ? Environment::PRODUCTION
         : Environment::SANDBOX;
-    $storeId     = ((string) getenv('SHOPEEPAY_CWS_STORE_ID')) ?: null;
+    $storeId     = ((string) getenv('SHOPEEPAY_SUBS_STORE_ID')) ?: null;
 
     $config = new Config(
         clientId:           (string) getenv('SHOPEEPAY_CLIENT_ID'),
         clientSecret:       (string) getenv('SHOPEEPAY_SECRET_KEY'),
         privateKey:         $privateKey,
         shopeepayPublicKey: $publicKey,
-        merchantId:         (string) getenv('SHOPEEPAY_CWS_MERCHANT_ID'),
+        merchantId:         (string) getenv('SHOPEEPAY_SUBS_MERCHANT_ID'),
         httpClient:         $httpClient,
         requestFactory:     $psr17,
         streamFactory:      $psr17,

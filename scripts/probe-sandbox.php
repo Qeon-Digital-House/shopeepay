@@ -46,13 +46,13 @@ declare(strict_types=1);
  *   php scripts/probe-sandbox.php --json             # report as JSON
  *
  * Env vars (same convention as .env.example / examples/_bootstrap.php):
- *   SHOPEEPAY_CLIENT_ID, SHOPEEPAY_SECRET_KEY, SHOPEEPAY_CWS_MERCHANT_ID,
+ *   SHOPEEPAY_CLIENT_ID, SHOPEEPAY_SECRET_KEY, SHOPEEPAY_SUBS_MERCHANT_ID,
  *   and ONE of each key pair — SHOPEEPAY_PRIVATE_KEY (PEM string) or
  *   SHOPEEPAY_PRIVATE_KEY_PATH (file path); SHOPEEPAY_PUBLIC_KEY or
  *   SHOPEEPAY_PUBLIC_KEY_PATH.
  *
  *   Optional (enable richer flow-probe chaining):
- *     SHOPEEPAY_CWS_STORE_ID       — outlet id, multi-outlet merchants
+ *     SHOPEEPAY_SUBS_STORE_ID       — outlet id, multi-outlet merchants
  *     SHOPEEPAY_AUTH_CODE          — authCode from a completed consent
  *                                    flow (otherwise bind probes with a
  *                                    dummy and only validates the path)
@@ -93,7 +93,7 @@ if ($production) {
 }
 
 // ── env loading ────────────────────────────────────────────────────────
-$required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_SECRET_KEY', 'SHOPEEPAY_CWS_MERCHANT_ID'];
+$required = ['SHOPEEPAY_CLIENT_ID', 'SHOPEEPAY_SECRET_KEY', 'SHOPEEPAY_SUBS_MERCHANT_ID'];
 foreach ($required as $var) {
     if (getenv($var) === false || getenv($var) === '') {
         fwrite(STDERR, "Missing env var: $var. See .env.example for the full list.\n");
@@ -110,14 +110,14 @@ $cache      = new Psr16Cache(new ArrayAdapter());
 
 $envFromFlag = $production
     || strtolower((string) getenv('SHOPEEPAY_IS_PRODUCTION')) === 'true';
-$storeId     = ((string) getenv('SHOPEEPAY_CWS_STORE_ID')) ?: null;
+$storeId     = ((string) getenv('SHOPEEPAY_SUBS_STORE_ID')) ?: null;
 
 $config = new Config(
     clientId:           (string) getenv('SHOPEEPAY_CLIENT_ID'),
     clientSecret:       (string) getenv('SHOPEEPAY_SECRET_KEY'),
     privateKey:         $privateKey,
     shopeepayPublicKey: $publicKey,
-    merchantId:         (string) getenv('SHOPEEPAY_CWS_MERCHANT_ID'),
+    merchantId:         (string) getenv('SHOPEEPAY_SUBS_MERCHANT_ID'),
     httpClient:         $httpClient,
     requestFactory:     $psr17,
     streamFactory:      $psr17,
