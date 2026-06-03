@@ -114,6 +114,63 @@ final class AccountLinkingServiceTest extends TestCase
         self::assertNotSame($a, $b);
     }
 
+    public function testGetAuthCodePerformsSignedGetAndHydratesResponse(): void
+    {
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(200, ['Content-Type' => 'application/json'], (string) json_encode([
+            'responseCode'    => '2001000',
+            'responseMessage' => 'Successful',
+            'authCode'        => 'AUTHCODE_FROM_BODY',
+            'state'           => 'st-xyz',
+        ])));
+
+        $resp = $service->getAuthCode(new GetAuthCodeRequest(
+            redirectUrl: 'https://merchant.example/cb',
+            state:       'st-xyz',
+            scopes:      ['ACCOUNT_BINDING'],
+        ));
+
+        self::assertSame('2001000',            $resp->responseCode);
+        self::assertSame('AUTHCODE_FROM_BODY', $resp->authCode);
+        self::assertSame('st-xyz',             $resp->state);
+
+        // It must be a signed GET (no body) to /v1.0/get-auth-code with the
+        // query params and the transaction header set.
+        $authReq = $http->getRequests()[1];
+        self::assertSame('GET',                 $authReq->getMethod());
+        self::assertSame('/v1.0/get-auth-code', $authReq->getUri()->getPath());
+        self::assertSame('',                    (string) $authReq->getBody());
+        self::assertSame('Bearer tk-1',         $authReq->getHeaderLine('Authorization'));
+        self::assertSame('95221',               $authReq->getHeaderLine('CHANNEL-ID'));
+        self::assertNotEmpty($authReq->getHeaderLine('X-SIGNATURE'));
+
+        parse_str($authReq->getUri()->getQuery(), $q);
+        self::assertSame('M1234',                          $q['merchantId']  ?? null);
+        self::assertSame('st-xyz',                         $q['state']       ?? null);
+        self::assertSame('https://merchant.example/cb',    $q['redirectUrl'] ?? null);
+        self::assertSame('ACCOUNT_BINDING',                $q['scopes']      ?? null);
+    }
+
+    public function testGetAuthCodePropagatesApiException(): void
+    {
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(400, [], (string) json_encode([
+            'responseCode'    => '4001000',
+            'responseMessage' => 'Invalid Field Format',
+        ])));
+
+        $this->expectException(ApiException::class);
+        $this->expectExceptionMessage('4001000: Invalid Field Format');
+
+        $service->getAuthCode(new GetAuthCodeRequest(
+            redirectUrl: 'https://merchant.example/cb',
+            state:       'st-1',
+            scopes:      ['ACCOUNT_BINDING'],
+        ));
+    }
+
     public function testBindPostsToCorrectPathAndHydratesResponse(): void
     {
         [$service, $http] = $this->build();

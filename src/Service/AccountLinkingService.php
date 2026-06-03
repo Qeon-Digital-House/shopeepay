@@ -8,6 +8,7 @@ use ShopeePay\Config;
 use ShopeePay\Dto\AccountLinking\BindAccountRequest;
 use ShopeePay\Dto\AccountLinking\BindAccountResponse;
 use ShopeePay\Dto\AccountLinking\GetAuthCodeRequest;
+use ShopeePay\Dto\AccountLinking\GetAuthCodeResponse;
 use ShopeePay\Dto\AccountLinking\InquiryRequest;
 use ShopeePay\Dto\AccountLinking\InquiryResponse;
 use ShopeePay\Dto\AccountLinking\UnbindRequest;
@@ -56,9 +57,42 @@ final class AccountLinkingService
      */
     public function buildAuthCodeUrl(GetAuthCodeRequest $request): string
     {
-        // channelId is sent as the CHANNEL-ID header, not as a query param.
-        // partnerReferenceNo is optional on this endpoint — included only
-        // when the caller explicitly supplied one.
+        return $this->config->baseUrl()
+            . self::PATH_AUTH_CODE
+            . '?'
+            . http_build_query($this->authCodeParams($request), '', '&', PHP_QUERY_RFC3986);
+    }
+
+    /**
+     * Server-to-server get-auth-code (svc 10): a signed GET that returns the
+     * `authCode` directly in its body (responseCode 2001000). Per the SNAP BI
+     * flow the caller then appends that `authCode` to the static consent URL
+     * for the user's browser; after consent ShopeePay redirects back to
+     * `redirectUrl` with the `authCode`, which is exchanged via `bind()`.
+     *
+     * Use this when you drive the linking flow from the backend. If you only
+     * need the browser-redirect URL, use `buildAuthCodeUrl()` (no HTTP call).
+     */
+    public function getAuthCode(GetAuthCodeRequest $request): GetAuthCodeResponse
+    {
+        $payload = $this->transport->get(
+            path:  self::PATH_AUTH_CODE,
+            query: $this->authCodeParams($request),
+        );
+        return GetAuthCodeResponse::fromArray($payload);
+    }
+
+    /**
+     * Query params shared by buildAuthCodeUrl() and getAuthCode().
+     *
+     * channelId is sent as the CHANNEL-ID header, not as a query param.
+     * partnerReferenceNo is optional on this endpoint — included only when
+     * the caller explicitly supplied one. merchantId defaults from Config.
+     *
+     * @return array<string, string>
+     */
+    private function authCodeParams(GetAuthCodeRequest $request): array
+    {
         $params = [
             'merchantId'  => $request->merchantId ?? $this->config->merchantId,
             'state'       => $request->state,
@@ -71,10 +105,7 @@ final class AccountLinkingService
             $params['scopes'] = implode(',', $request->scopes);
         }
 
-        return $this->config->baseUrl()
-            . self::PATH_AUTH_CODE
-            . '?'
-            . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+        return $params;
     }
 
     public function bind(BindAccountRequest $request): BindAccountResponse

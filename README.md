@@ -141,6 +141,23 @@ $accountLinking->unbind(new UnbindRequest(
 `authCode` expires **30 minutes** after issuance — a delayed exchange
 surfaces as `ApiException` with a `4030700`-class response code.
 
+**Backend-driven variant.** `get-auth-code` is also a signed server-to-server
+GET that returns the `authCode` directly in its body. Use `getAuthCode()` when
+you drive the flow from the backend, then append the returned code to the
+consent URL for the user:
+
+```php
+$auth = $accountLinking->getAuthCode(new GetAuthCodeRequest(
+    redirectUrl: 'https://your-app.example/shopeepay/callback',
+    state:       GetAuthCodeRequest::generateState(),
+    scopes:      ['ACCOUNT_BINDING'],
+));
+$auth->authCode;   // e.g. "116978121669727701" → append to the consent URL
+```
+
+`buildAuthCodeUrl()` (URL only, no HTTP) and `getAuthCode()` (signed GET,
+returns `authCode`) take the same `GetAuthCodeRequest`.
+
 Full walkthrough: [`examples/01-account-linking.php`](examples/01-account-linking.php).
 
 ### Link & Pay

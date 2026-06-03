@@ -7,12 +7,16 @@ namespace ShopeePay\Dto\AccountLinking;
 use InvalidArgumentException;
 
 /**
- * Inputs for the `/v1.0/get-auth-code` frontend redirect (svc 10).
+ * Inputs for `/v1.0/get-auth-code` (svc 10). Used two ways:
  *
- * Unlike the other AccountLinking operations, get-auth-code is NOT a backend
- * POST — the SDK builds a URL that the caller redirects the user's browser
- * to. The user grants consent inside ShopeePay; ShopeePay then redirects
- * back to `redirectUrl` with `authCode` and `state` in the query string.
+ *   - `AccountLinkingService::getAuthCode()` — a signed server-to-server GET
+ *     that returns the `authCode` directly in its body (responseCode 2001000).
+ *   - `AccountLinkingService::buildAuthCodeUrl()` — builds the URL the
+ *     caller appends the authCode to / redirects the user's browser to.
+ *
+ * Either way, the user grants consent inside ShopeePay; ShopeePay then
+ * redirects back to `redirectUrl` with `authCode` and `state` in the query
+ * string, and that code is exchanged via `bind()`.
  *
  * `state` is the standard OAuth CSRF token. The caller MUST:
  *   1. Generate a random 32-char hex string (use the `generateState()` helper).

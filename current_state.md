@@ -198,13 +198,17 @@ ref). Run a single step with
    StatusCode, ErrorMapper, LogScrubber, Environment enum, exception hierarchy,
    Money DTO, Config.
 3. ✅ **Transport + AccessTokenManager** — signed PSR-18 send, retry-once on
-   401-or-4011xxx, PSR-16 cache.
+   401-or-4011xxx, PSR-16 cache. `Transport::get()` adds signed-GET support
+   (path-with-query signing via the documented rawurlencode(decoded-query)
+   quirk), sharing the retry loop with `send()`.
 4. ✅ **Webhook subsystem** — Verifier (parses key in ctor, 5-min replay window)
    + EventFactory (svc-code + refund-shape dispatch) + 7 typed events.
-5. ✅ **AccountLinkingService** — buildAuthCodeUrl (URL builder, no HTTP) +
-   bind/unbind/inquiry POSTs routed through Transport. 7 DTOs with ctor
-   validation; `GetAuthCodeRequest::generateState()` helper for CSRF token.
-   Endpoint paths are SNAP-BI-convention guesses, pending sandbox confirmation.
+5. ✅ **AccountLinkingService** — buildAuthCodeUrl (URL builder, no HTTP),
+   getAuthCode (signed server-to-server GET → `GetAuthCodeResponse` with the
+   authCode, confirmed by the probe), bind/unbind/inquiry POSTs routed through
+   Transport. DTOs with ctor validation; `GetAuthCodeRequest::generateState()`
+   helper for CSRF token. NOTE: bind/unbind request shapes + paths still need
+   the probe-verified corrections (see "Next" item 2).
 6. ✅ **LinkAndPayService** — create (svc 54, `/v1.1/debit/payment-host-to-host`),
    checkStatus (svc 55, `/v1.0/debit/status`), refund (svc 58, `/v1.0/debit/refund`).
    CheckStatusResponse exposes `isSuccess()` + `isTerminal()` so caller polling

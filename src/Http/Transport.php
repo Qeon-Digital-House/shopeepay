@@ -53,19 +53,85 @@ final class Transport
         ?string $externalId = null,
     ): array {
         $minifiedBody = $this->bodyMinifier->encode($body);
-        $attempt      = 1;
+
+        return $this->execute(
+            method:       $method,
+            signPath:     $path,
+            requestUrl:   $this->config->baseUrl() . $path,
+            minifiedBody: $minifiedBody,
+            attachBody:   true,
+            externalId:   $externalId,
+        );
+    }
+
+    /**
+     * Signed GET. SNAP BI signs the path-with-query (body is the empty
+     * string), but the gateway URL-decodes the query and then re-encodes
+     * the WHOLE thing as a single opaque value before folding it into
+     * stringToSign — so the signature path is `path?rawurlencode(decoded
+     * query)` while the request is sent with the normally-encoded query.
+     * (Empirically confirmed by the sandbox probe; mismatching this yields
+     * a 4011000 stringToSign error.)
+     *
+     * @param  array<string, scalar> $query
+     * @return DecodedBody
+     *
+     * @throws ApiException     when the gateway returns a non-success response
+     * @throws NetworkException for transport failures or unparseable responses
+     */
+    public function get(
+        string $path,
+        array $query = [],
+        ?string $externalId = null,
+    ): array {
+        $queryString = http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+
+        $signPath   = $path;
+        $requestUrl = $this->config->baseUrl() . $path;
+        if ($queryString !== '') {
+            $signPath   .= '?' . rawurlencode(urldecode($queryString));
+            $requestUrl .= '?' . $queryString;
+        }
+
+        return $this->execute(
+            method:       'GET',
+            signPath:     $signPath,
+            requestUrl:   $requestUrl,
+            minifiedBody: '',
+            attachBody:   false,
+            externalId:   $externalId,
+        );
+    }
+
+    /**
+     * Shared send-sign-retry loop for both POST (send) and GET (get).
+     *
+     * `signPath` is what goes into stringToSign; `requestUrl` is the actual
+     * URL fetched. They differ for signed GETs (see get()).
+     *
+     * @return DecodedBody
+     */
+    private function execute(
+        string $method,
+        string $signPath,
+        string $requestUrl,
+        string $minifiedBody,
+        bool $attachBody,
+        ?string $externalId,
+    ): array {
+        $attempt = 1;
 
         while (true) {
             $accessToken = $this->accessTokenManager->get();
             $built       = $this->headerBuilder->transactionHeaders(
                 method:       $method,
-                path:         $path,
+                path:         $signPath,
                 accessToken:  $accessToken,
                 minifiedBody: $minifiedBody,
                 externalId:   $externalId,
             );
 
-            $response = $this->dispatch($method, $path, $minifiedBody, $built['headers']);
+            $response = $this->dispatch($method, $requestUrl, $minifiedBody, $attachBody, $built['headers']);
             $decoded  = $this->decodeBody($response);
 
             $responseCode = is_string($decoded['responseCode'] ?? null) ? $decoded['responseCode'] : '';
@@ -94,17 +160,17 @@ final class Transport
      */
     private function dispatch(
         string $method,
-        string $path,
+        string $requestUrl,
         string $minifiedBody,
+        bool $attachBody,
         array $headers,
     ): ResponseInterface {
-        $request = $this->config->requestFactory->createRequest(
-            $method,
-            $this->config->baseUrl() . $path,
-        );
-        $request = $request->withBody(
-            $this->config->streamFactory->createStream($minifiedBody),
-        );
+        $request = $this->config->requestFactory->createRequest($method, $requestUrl);
+        if ($attachBody) {
+            $request = $request->withBody(
+                $this->config->streamFactory->createStream($minifiedBody),
+            );
+        }
         foreach ($headers as $name => $value) {
             $request = $request->withHeader($name, $value);
         }
