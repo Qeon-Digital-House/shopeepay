@@ -105,7 +105,7 @@ inside ShopeePay, ShopeePay redirects back to your callback with an
 `authCode`, and you exchange it for a long-lived `accountToken`.
 
 ```php
-use ShopeePay\Dto\AccountLinking\{BindAccountRequest, GetAuthCodeRequest, InquiryRequest};
+use ShopeePay\Dto\AccountLinking\{BindAccountRequest, GetAuthCodeRequest, InquiryRequest, UnbindRequest};
 
 // 1. Build the consent URL and redirect the user.
 $state = GetAuthCodeRequest::generateState();   // store in session for CSRF check
@@ -129,6 +129,13 @@ $status = $accountLinking->inquiry(new InquiryRequest(
     partnerReferenceNo: 'INQ-' . bin2hex(random_bytes(4)),
 ));
 $status->isActive();  // true → safe to transact
+
+// 4. When the user disconnects their wallet: revoke the accountToken.
+$accountLinking->unbind(new UnbindRequest(
+    accountToken:       $bound->accountToken,
+    partnerReferenceNo: 'UNBIND-' . bin2hex(random_bytes(4)),
+));
+// After unbind, the accountToken can no longer be used for new charges.
 ```
 
 `authCode` expires **30 minutes** after issuance — a delayed exchange
