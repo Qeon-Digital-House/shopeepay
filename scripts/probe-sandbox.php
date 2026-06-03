@@ -14,12 +14,13 @@ declare(strict_types=1);
  *      reads that and prints it. Treat THAT value as ground truth and
  *      update the Config default if it differs.
  *
- *   2. **Flow probe.** Four steps, each feeding the next:
+ *   2. **Flow probe.** Five steps, each feeding the next:
  *        a. get-auth-code                   — GET the consent URL, verify
  *                                             the endpoint responds
  *        b. registration-account-binding    — exchange authCode → accountToken
  *        c. debit/payment-host-to-host      — debit using accountToken
  *        d. debit/status                    — query the debit's status
+ *        e. registration-account-unbinding  — revoke accountToken (cleanup)
  *
  *      Each path is classified `success`, `looks-valid-path`,
  *      `may-be-wrong-path`, or `indeterminate-*`. When the env var for a
@@ -45,7 +46,7 @@ declare(strict_types=1);
  *   php scripts/probe-sandbox.php --production       # asks for confirmation
  *   php scripts/probe-sandbox.php --json             # report as JSON
  *   php scripts/probe-sandbox.php --only=bind        # run ONE flow step
- *       (steps: auth-code | bind | debit | status | token; the
+ *       (steps: auth-code | bind | debit | status | unbind | token; the
  *        access-token probe always runs. via Make: make probe ARGS=--only=bind)
  *
  * Env vars (same convention as .env.example / examples/_bootstrap.php):
@@ -94,6 +95,7 @@ $stepAliases = [
     'bind'         => 'bind',
     'debit'        => 'debit',
     'status'       => 'debitStatus', 'debit-status' => 'debitStatus',
+    'unbind'       => 'unbind', 'unlink' => 'unbind', 'unbinding' => 'unbind',
     'token'        => 'token',  // access-token probe only, no flow step
 ];
 $only = null;
@@ -167,15 +169,22 @@ $accountLinking = new AccountLinkingService($config, $transport);
 // cache) so we can read the gateway's expiresIn verbatim.
 $tokenProbe = probeAccessToken($config, $headerBuilder);
 
-// ── probe: flow (get-auth-code → bind → debit → status) ────────────────
+// ── probe: flow (get-auth-code → bind → debit → status → unbind) ───────
 // Each step chains into the next: bind's accountToken feeds debit's
-// body, debit's partnerReferenceNo feeds the status query.
+// body, debit's partnerReferenceNo feeds the status query, and bind's
+// accountToken also feeds the unbind cleanup.
 //
 // When the user-provided env var for a step is empty, a placeholder
 // value is sent so the gateway still validates the path; classification
 // surfaces whether the path itself is real.
 // Steps not selected by --only stay null and are skipped in the report.
-$flow = ['getAuthCode' => null, 'bind' => null, 'debit' => null, 'debitStatus' => null];
+$flow = [
+    'getAuthCode' => null,
+    'bind'        => null,
+    'debit'       => null,
+    'debitStatus' => null,
+    'unbind'      => null,
+];
 
 // 1. get-auth-code: signed server-to-server GET (NOT a pure browser URL —
 //    the gateway requires the full SNAP-BI signed header set on this
@@ -216,7 +225,22 @@ if ($wantStep('debit')) {
 if ($wantStep('debitStatus')) {
     $statusRef = ($flow['debit']['responseReferenceNo'] ?? '')
         ?: ((string) (getenv('SHOPEEPAY_ORIGINAL_REF') ?: '') ?: $debitRef);
-    $flow['debitStatus'] = probeDebitStatus($transport, $statusRef);
+    $flow['debitStatus'] = probeDebitStatus(
+        $transport,
+        $config->merchantId,
+        (string) ($config->storeId ?? ''),
+        $statusRef,
+    );
+}
+
+// 5. registration-account-unbinding — revoke the accountToken (cleanup).
+//    Runs last in the full chain so it tears down the binding created in
+//    step 2. When no accountToken is available it falls back to a
+//    partnerReferenceNo so the endpoint shape is still validated.
+if ($wantStep('unbind')) {
+    $accountToken = ($flow['bind']['accountToken'] ?? '')
+        ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
+    $flow['unbind'] = probeUnbind($transport, $config->merchantId, $accountToken);
 }
 
 // ── report ─────────────────────────────────────────────────────────────
@@ -500,13 +524,48 @@ function probeDebit(
  * @return array{path: string, classification: string, httpStatus: ?int,
  *               responseCode: string, responseMessage: string, raw: mixed}
  */
-function probeDebitStatus(Transport $transport, string $partnerReferenceNo): array
-{
+function probeDebitStatus(
+    Transport $transport,
+    string $merchantId,
+    string $externalStoreId,
+    string $partnerReferenceNo,
+): array {
+    // /v1.0/debit/status (svc 55) mandatory fields: originalPartnerReferenceNo,
+    // merchantId, externalStoreId, serviceCode (the queried txn's service —
+    // 54 for the debit), and an amount object. Omitting amount.value trips
+    // 4005502 "Invalid mandatory field {value}".
     $body = [
-        'serviceCode'                => '54',
         'originalPartnerReferenceNo' => $partnerReferenceNo,
+        'merchantId'                 => $merchantId,
+        'externalStoreId'            => $externalStoreId !== '' ? $externalStoreId : 'PROBE-STORE-ID',
+        'serviceCode'                => '54',
+        'amount'                     => ['value' => '10000.00', 'currency' => 'IDR'],
     ];
     return probeRequest($transport, '/v1.0/debit/status', $body);
+}
+
+/**
+ * @return array{path: string, classification: string, httpStatus: ?int,
+ *               responseCode: string, responseMessage: string,
+ *               accountTokenProvided: bool, raw: mixed}
+ */
+function probeUnbind(Transport $transport, string $merchantId, string $accountToken): array
+{
+    // /v1.0/registration-account-unbinding (NO /unbind suffix). merchantId
+    // is top-level mandatory; the binding to revoke is identified by EITHER
+    // additionalInfo.accountToken OR a top-level partnerReferenceNo (at
+    // least one — unlike bind, both may be sent together). We send the
+    // accountToken when we have one, else a partnerReferenceNo so the
+    // endpoint shape is still exercised.
+    $body = ['merchantId' => $merchantId];
+    if ($accountToken !== '') {
+        $body['additionalInfo'] = ['accountToken' => $accountToken];
+    } else {
+        $body['partnerReferenceNo'] = 'PROBE-UNBIND-' . bin2hex(random_bytes(4));
+    }
+    $r = probeRequest($transport, '/v1.0/registration-account-unbinding', $body);
+    $r['accountTokenProvided'] = $accountToken !== '';
+    return $r;
 }
 
 /**
@@ -698,8 +757,9 @@ function printReport(array $report): void
     $bp = $report['flow']['bind'];
     $dp = $report['flow']['debit'];
     $sp = $report['flow']['debitStatus'];
+    $up = $report['flow']['unbind'];
 
-    if ($ga !== null || $bp !== null || $dp !== null || $sp !== null) {
+    if ($ga !== null || $bp !== null || $dp !== null || $sp !== null || $up !== null) {
         echo "--- Flow Probe ---\n";
     }
 
@@ -738,6 +798,15 @@ function printReport(array $report): void
         echo "   path: {$sp['path']}\n";
         echo "   " . ($sp['responseCode'] ?: '?') . ' ' . trim((string) $sp['responseMessage']) . "\n";
         printRawResponse($sp['raw']);
+    }
+
+    if ($up !== null) {
+        echo sprintf("\n5. registration-account-unbinding %s  (HTTP %s)\n",
+            $up['classification'], $up['httpStatus'] ?? '?');
+        echo "   path: {$up['path']}\n";
+        echo "   " . ($up['responseCode'] ?: '?') . ' ' . trim((string) $up['responseMessage']) . "\n";
+        echo "   accountToken supplied: " . ($up['accountTokenProvided'] ? 'yes' : 'no — used partnerReferenceNo') . "\n";
+        printRawResponse($up['raw']);
     }
 
     echo "\n";
