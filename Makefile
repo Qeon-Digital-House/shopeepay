@@ -70,6 +70,8 @@ probe: build
 	            -e SHOPEEPAY_PRIVATE_KEY -e SHOPEEPAY_PUBLIC_KEY \
 	            -e SHOPEEPAY_PRIVATE_KEY_PATH -e SHOPEEPAY_PUBLIC_KEY_PATH \
 	            -e SHOPEEPAY_IS_PRODUCTION \
+	            -e SHOPEEPAY_AUTH_CODE -e SHOPEEPAY_ACCOUNT_TOKEN \
+	            -e SHOPEEPAY_ORIGINAL_REF \
 	            php php scripts/probe-sandbox.php $(ARGS)
 
 clean:

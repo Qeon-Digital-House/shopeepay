@@ -44,6 +44,9 @@ declare(strict_types=1);
  *   php scripts/probe-sandbox.php
  *   php scripts/probe-sandbox.php --production       # asks for confirmation
  *   php scripts/probe-sandbox.php --json             # report as JSON
+ *   php scripts/probe-sandbox.php --only=bind        # run ONE flow step
+ *       (steps: auth-code | bind | debit | status | token; the
+ *        access-token probe always runs. via Make: make probe ARGS=--only=bind)
  *
  * Env vars (same convention as .env.example / examples/_bootstrap.php):
  *   SHOPEEPAY_CLIENT_ID, SHOPEEPAY_SECRET_KEY, SHOPEEPAY_SUBS_MERCHANT_ID,
@@ -80,6 +83,33 @@ use Symfony\Component\Cache\Psr16Cache;
 $args        = array_slice($argv, 1);
 $production  = in_array('--production', $args, true);
 $jsonOutput  = in_array('--json',       $args, true);
+
+// --only=<step> runs a single flow step instead of the full chain, so a
+// single endpoint can be iterated on in isolation (e.g. --only=bind).
+// The access-token probe always runs — every flow step needs a token.
+// Friendly aliases map onto the canonical $flow keys.
+$stepAliases = [
+    'auth-code'    => 'getAuthCode', 'authcode' => 'getAuthCode',
+    'getauthcode'  => 'getAuthCode', 'get-auth-code' => 'getAuthCode',
+    'bind'         => 'bind',
+    'debit'        => 'debit',
+    'status'       => 'debitStatus', 'debit-status' => 'debitStatus',
+    'token'        => 'token',  // access-token probe only, no flow step
+];
+$only = null;
+foreach ($args as $arg) {
+    if (str_starts_with($arg, '--only=')) {
+        $val = strtolower(substr($arg, strlen('--only=')));
+        if (!isset($stepAliases[$val])) {
+            fwrite(STDERR, "Unknown --only step '$val'. Valid: "
+                . implode(', ', array_keys($stepAliases)) . "\n");
+            exit(1);
+        }
+        $only = $stepAliases[$val];
+    }
+}
+// Which flow steps to run: all four by default, or just the selected one.
+$wantStep = static fn (string $key): bool => $only === null || $only === $key;
 
 if ($production) {
     fwrite(STDERR, "⚠️  Production probe requested. The probe is read-only but\n");
@@ -144,33 +174,50 @@ $tokenProbe = probeAccessToken($config, $headerBuilder);
 // When the user-provided env var for a step is empty, a placeholder
 // value is sent so the gateway still validates the path; classification
 // surfaces whether the path itself is real.
-$flow = [];
+// Steps not selected by --only stay null and are skipped in the report.
+$flow = ['getAuthCode' => null, 'bind' => null, 'debit' => null, 'debitStatus' => null];
 
 // 1. get-auth-code: signed server-to-server GET (NOT a pure browser URL —
 //    the gateway requires the full SNAP-BI signed header set on this
 //    endpoint, surfacing as 4001002 "Invalid Mandatory Field" otherwise).
-$flow['getAuthCode'] = probeGetAuthCode($accountLinking, $config, $headerBuilder, $atm);
+if ($wantStep('getAuthCode')) {
+    $flow['getAuthCode'] = probeGetAuthCode($accountLinking, $config, $headerBuilder, $atm);
+}
 
 // 2. registration-account-binding
 //    authCode comes from get-auth-code's response when it succeeds; an
 //    explicit SHOPEEPAY_AUTH_CODE env wins (e.g. a code captured from a
 //    real browser-consent redirect), and probeBind falls back to a
-//    placeholder when neither is available.
-$authCode = (string) (getenv('SHOPEEPAY_AUTH_CODE') ?: '')
-    ?: ($flow['getAuthCode']['authCode'] ?? '');
-$flow['bind'] = probeBind($transport, $config->merchantId, $authCode);
-
-$accountToken = ($flow['bind']['accountToken'] ?? '')
-    ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
+//    placeholder when neither is available. When this step runs in
+//    isolation (--only=bind) the get-auth-code chain is skipped, so the
+//    env var is the only source of a real authCode.
+if ($wantStep('bind')) {
+    $authCode = (string) (getenv('SHOPEEPAY_AUTH_CODE') ?: '')
+        ?: ($flow['getAuthCode']['authCode'] ?? '');
+    $flow['bind'] = probeBind($transport, $config->merchantId, $authCode);
+}
 
 // 3. debit/payment-host-to-host
-$debitRef     = 'PROBE-DEBIT-' . bin2hex(random_bytes(4));
-$flow['debit'] = probeDebit($transport, $debitRef, $accountToken);
+$debitRef = 'PROBE-DEBIT-' . bin2hex(random_bytes(4));
+if ($wantStep('debit')) {
+    $accountToken = ($flow['bind']['accountToken'] ?? '')
+        ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
+    $flow['debit'] = probeDebit(
+        $transport,
+        $config->merchantId,
+        (string) ($config->storeId ?? ''),
+        $debitRef,
+        $accountToken,
+    );
+}
 
 // 4. debit/status — query the debit just attempted (or the dummy ref
 //    when the debit didn't actually create a row).
-$statusRef = ($flow['debit']['responseReferenceNo'] ?? '') ?: $debitRef;
-$flow['debitStatus'] = probeDebitStatus($transport, $statusRef);
+if ($wantStep('debitStatus')) {
+    $statusRef = ($flow['debit']['responseReferenceNo'] ?? '')
+        ?: ((string) (getenv('SHOPEEPAY_ORIGINAL_REF') ?: '') ?: $debitRef);
+    $flow['debitStatus'] = probeDebitStatus($transport, $statusRef);
+}
 
 // ── report ─────────────────────────────────────────────────────────────
 $report = [
@@ -410,12 +457,33 @@ function probeBind(Transport $transport, string $merchantId, string $authCode): 
  *               responseCode: string, responseMessage: string,
  *               responseReferenceNo: string, accountTokenProvided: bool, raw: mixed}
  */
-function probeDebit(Transport $transport, string $partnerReferenceNo, string $accountToken): array
-{
+function probeDebit(
+    Transport $transport,
+    string $merchantId,
+    string $externalStoreId,
+    string $partnerReferenceNo,
+    string $accountToken,
+): array {
+    // /v1.1/debit/payment-host-to-host mandatory fields (subscription spec):
+    //   top-level: partnerReferenceNo, merchantId, externalStoreId, amount,
+    //              urlParams[] (each needs url + type=PAY_RETURN + isDeepLink)
+    //   additionalInfo: accountToken  ← NOT top-level
+    // Omitting any of these trips 4000702 "Invalid Mandatory Field {…}".
     $body = [
         'partnerReferenceNo' => $partnerReferenceNo,
-        'amount'             => ['value' => '1000.00', 'currency' => 'IDR'],
-        'accountToken'       => $accountToken !== '' ? $accountToken : 'PROBE-INVALID-ACCOUNT-TOKEN',
+        'merchantId'         => $merchantId,
+        'externalStoreId'    => $externalStoreId !== '' ? $externalStoreId : 'PROBE-STORE-ID',
+        'amount'             => ['value' => '10000.00', 'currency' => 'IDR'],
+        'urlParams'          => [
+            [
+                'url'        => 'https://localhost/probe-pay-return',
+                'type'       => 'PAY_RETURN',
+                'isDeepLink' => 'N',
+            ],
+        ],
+        'additionalInfo'     => [
+            'accountToken' => $accountToken !== '' ? $accountToken : 'PROBE-INVALID-ACCOUNT-TOKEN',
+        ],
     ];
     $r = probeRequest($transport, '/v1.1/debit/payment-host-to-host', $body);
 
@@ -624,40 +692,53 @@ function printReport(array $report): void
     }
     echo "\n";
 
-    echo "--- Flow Probe ---\n";
-
+    // Only steps that actually ran are present (others are null when a
+    // single step was selected with --only).
     $ga = $report['flow']['getAuthCode'];
-    echo sprintf("1. get-auth-code           %s  (HTTP %s)\n",
-        $ga['classification'], $ga['httpStatus'] ?? '?');
-    echo "   URL: " . $ga['url'] . "\n";
-    echo "   Content-Type: " . ($ga['contentType'] ?: '(none)') . "\n";
-    printRawResponse($ga['raw']);
-
     $bp = $report['flow']['bind'];
-    echo sprintf("\n2. registration-account-binding   %s  (HTTP %s)\n",
-        $bp['classification'], $bp['httpStatus'] ?? '?');
-    echo "   path: {$bp['path']}\n";
-    echo "   " . ($bp['responseCode'] ?: '?') . ' ' . trim((string) $bp['responseMessage']) . "\n";
-    echo "   authCode supplied via env: " . ($bp['authCodeProvided'] ? 'yes' : 'no — used dummy') . "\n";
-    if ($bp['accountToken'] !== '') {
-        echo "   ✓ accountToken received → chained into debit\n";
-    }
-    printRawResponse($bp['raw']);
-
     $dp = $report['flow']['debit'];
-    echo sprintf("\n3. debit/payment-host-to-host    %s  (HTTP %s)\n",
-        $dp['classification'], $dp['httpStatus'] ?? '?');
-    echo "   path: {$dp['path']}\n";
-    echo "   " . ($dp['responseCode'] ?: '?') . ' ' . trim((string) $dp['responseMessage']) . "\n";
-    echo "   accountToken supplied: " . ($dp['accountTokenProvided'] ? 'yes' : 'no — used dummy') . "\n";
-    printRawResponse($dp['raw']);
-
     $sp = $report['flow']['debitStatus'];
-    echo sprintf("\n4. debit/status                  %s  (HTTP %s)\n",
-        $sp['classification'], $sp['httpStatus'] ?? '?');
-    echo "   path: {$sp['path']}\n";
-    echo "   " . ($sp['responseCode'] ?: '?') . ' ' . trim((string) $sp['responseMessage']) . "\n";
-    printRawResponse($sp['raw']);
+
+    if ($ga !== null || $bp !== null || $dp !== null || $sp !== null) {
+        echo "--- Flow Probe ---\n";
+    }
+
+    if ($ga !== null) {
+        echo sprintf("1. get-auth-code           %s  (HTTP %s)\n",
+            $ga['classification'], $ga['httpStatus'] ?? '?');
+        echo "   URL: " . $ga['url'] . "\n";
+        echo "   Content-Type: " . ($ga['contentType'] ?: '(none)') . "\n";
+        printRawResponse($ga['raw']);
+    }
+
+    if ($bp !== null) {
+        echo sprintf("\n2. registration-account-binding   %s  (HTTP %s)\n",
+            $bp['classification'], $bp['httpStatus'] ?? '?');
+        echo "   path: {$bp['path']}\n";
+        echo "   " . ($bp['responseCode'] ?: '?') . ' ' . trim((string) $bp['responseMessage']) . "\n";
+        echo "   authCode supplied via env: " . ($bp['authCodeProvided'] ? 'yes' : 'no — used dummy') . "\n";
+        if ($bp['accountToken'] !== '') {
+            echo "   ✓ accountToken received → chained into debit\n";
+        }
+        printRawResponse($bp['raw']);
+    }
+
+    if ($dp !== null) {
+        echo sprintf("\n3. debit/payment-host-to-host    %s  (HTTP %s)\n",
+            $dp['classification'], $dp['httpStatus'] ?? '?');
+        echo "   path: {$dp['path']}\n";
+        echo "   " . ($dp['responseCode'] ?: '?') . ' ' . trim((string) $dp['responseMessage']) . "\n";
+        echo "   accountToken supplied: " . ($dp['accountTokenProvided'] ? 'yes' : 'no — used dummy') . "\n";
+        printRawResponse($dp['raw']);
+    }
+
+    if ($sp !== null) {
+        echo sprintf("\n4. debit/status                  %s  (HTTP %s)\n",
+            $sp['classification'], $sp['httpStatus'] ?? '?');
+        echo "   path: {$sp['path']}\n";
+        echo "   " . ($sp['responseCode'] ?: '?') . ' ' . trim((string) $sp['responseMessage']) . "\n";
+        printRawResponse($sp['raw']);
+    }
 
     echo "\n";
     echo "=== End of report ===\n";
