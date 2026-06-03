@@ -15,3 +15,6 @@
 /coverage/
 /build/
 /.composer-cache/
+# Probe run dumps — contain live accountToken / authCode / userIdHash.
+/response-example.txt
+/*.probe.txt

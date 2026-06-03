@@ -39,10 +39,15 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
      `/v1.0/auth/*` paths in `AuthCaptureService.php`.
   2. **Fix the SDK DTOs to match the verified shapes** (probe-only so far):
      `BindAccountRequest` (+ `AccountLinkingService::PATH_BIND` → drop
-     `/bind`, add `merchantId`, one-of authCode/partnerReferenceNo) and the
-     LinkAndPay/Subscription `CreatePaymentRequest` (add `merchantId`,
-     `externalStoreId`, `urlParams`; move `accountToken` into
-     `additionalInfo`). Update the corresponding unit tests.
+     `/bind`, add `merchantId`, one-of authCode/partnerReferenceNo);
+     `UnbindRequest` (+ `PATH_UNBIND` → drop `/unbind`, add top-level
+     `merchantId`, move the token into `additionalInfo.accountToken` —
+     currently emits a top-level `tokenId`); the LinkAndPay/Subscription
+     `CreatePaymentRequest` (add `merchantId`, `externalStoreId`,
+     `urlParams`; move `accountToken` into `additionalInfo`); and the
+     LinkAndPay/Subscription `CheckStatusRequest` (add `merchantId`,
+     `externalStoreId`, `serviceCode`, and an `amount` object). Update the
+     corresponding unit tests.
   3. Then 0.1.0 release (step 12).
 
 ## Source-of-truth files
@@ -148,10 +153,42 @@ svc 54) — `urlParams[]` is mandatory; `accountToken` lives inside
 }
 ```
 
+**debit/status** (`POST /v1.0/debit/status`, svc 55) — query a debit's status.
+Mandatory: `originalPartnerReferenceNo` (the partner ref of the txn to query),
+`merchantId`, `externalStoreId`, `serviceCode` (the queried txn's service —
+`54` for debit), and an **`amount`** object. Omitting `amount.value` trips
+`4005502 Invalid mandatory field {value}`:
+```json
+{
+  "originalPartnerReferenceNo": "…",
+  "merchantId": "Merchant123",
+  "externalStoreId": "Store123",
+  "serviceCode": "54",
+  "amount": { "value": "10000.00", "currency": "IDR" }
+}
+```
+
+**registration-account-unbinding** (`POST /v1.0/registration-account-unbinding`,
+svc 09) — **no `/unbind` suffix**. `merchantId` top-level mandatory; the binding
+to revoke is identified by `additionalInfo.accountToken` OR top-level
+`partnerReferenceNo` (at least one — both may be sent together, unlike bind):
+```json
+{
+  "merchantId": "Merchant123",
+  "partnerReferenceNo": "…",
+  "additionalInfo": { "accountToken": "…" }
+}
+```
+
+Recurring theme: **every POST endpoint needs top-level `merchantId`**, and most
+also need `externalStoreId` — the SDK DTOs do not yet supply these.
+
 Probe env knobs: `SHOPEEPAY_AUTH_CODE` (real code from a consent redirect —
 required to actually bind when running `--only=bind`), `SHOPEEPAY_ACCOUNT_TOKEN`
-(for debit), `SHOPEEPAY_ORIGINAL_REF` (for `--only=status`). Run a single step
-with `make probe ARGS=--only=<auth-code|bind|debit|status|token>`.
+(for debit/unbind), `SHOPEEPAY_ORIGINAL_REF` (the partnerReferenceNo to query
+for `--only=status` — without it the status step queries a never-debited random
+ref). Run a single step with
+`make probe ARGS=--only=<auth-code|bind|debit|status|unbind|token>`.
 
 ## Build order
 
@@ -202,11 +239,12 @@ with `make probe ARGS=--only=<auth-code|bind|debit|status|token>`.
 11. 🔶 **Sandbox probe — RUNNING against live UAT.** `scripts/probe-sandbox.php`
     was rewritten as an end-to-end flow probe: access-token (captures the
     gateway's `expiresIn`) → get-auth-code → registration-account-binding →
-    debit/payment-host-to-host → debit/status, each step chaining into the
-    next (authCode → accountToken → referenceNo). Each step dumps its full
+    debit/payment-host-to-host → debit/status → registration-account-unbinding,
+    each step chaining into the next (authCode → accountToken → referenceNo;
+    accountToken also drives the unbind cleanup). Each step dumps its full
     raw response (`printRawResponse`). Supports `--json`, `--production`
     (prompts), and **`--only=<step>`** to run a single endpoint in isolation
-    (`make probe ARGS=--only=bind`). `make probe` now forwards
+    (`make probe ARGS=--only=bind`; steps include `unbind`). `make probe` now forwards
     `SHOPEEPAY_AUTH_CODE` / `SHOPEEPAY_ACCOUNT_TOKEN` / `SHOPEEPAY_ORIGINAL_REF`
     into the container.
     **Findings landed in the probe** (see "Verified request shapes"): the

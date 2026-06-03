@@ -34,11 +34,11 @@ PHP_VERSION=8.1 DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose \
 
 `scripts/probe-sandbox.php` (`make probe`) walks the live flow end-to-end:
 access-token → get-auth-code → registration-account-binding →
-debit/payment-host-to-host → debit/status, chaining each step's output into the
-next. Run one step in isolation:
+debit/payment-host-to-host → debit/status → registration-account-unbinding,
+chaining each step's output into the next. Run one step in isolation:
 
 ```bash
-make probe ARGS=--only=bind     # steps: auth-code | bind | debit | status | token
+make probe ARGS=--only=bind     # steps: auth-code | bind | debit | status | unbind | token
 make probe ARGS=--json
 ```
 
@@ -63,9 +63,23 @@ when fixing the SDK, port these shapes and update the unit tests.
   `merchantId`, `externalStoreId`, `amount`, and **`urlParams[]`** (each entry:
   `url` + `type=PAY_RETURN` + `isDeepLink` `Y`/`N`). **`accountToken` goes inside
   `additionalInfo`**, not top-level.
+- **`POST /v1.0/debit/status`** (svc 55): mandatory `originalPartnerReferenceNo`,
+  `merchantId`, `externalStoreId`, `serviceCode` (the queried txn's service,
+  e.g. `54`), and an **`amount`** object (`value`/`currency`). Missing
+  `amount.value` → `4005502 Invalid mandatory field {value}`.
+- **`POST /v1.0/registration-account-unbinding`** (svc 09): **no `/unbind`
+  suffix**. Top-level `merchantId` mandatory; identify the binding by
+  `additionalInfo.accountToken` OR top-level `partnerReferenceNo` (at least
+  one; both allowed together, unlike bind).
+
+Recurring theme: **every POST endpoint needs top-level `merchantId`**, and most
+also need `externalStoreId`.
 
 SDK files needing these corrections: `src/Dto/AccountLinking/BindAccountRequest.php`
-+ `AccountLinkingService::PATH_BIND`; `src/Dto/{LinkAndPay,Subscription}/CreatePaymentRequest.php`.
++ `AccountLinkingService::PATH_BIND`; `src/Dto/AccountLinking/UnbindRequest.php`
+(emits top-level `tokenId`) + `PATH_UNBIND`;
+`src/Dto/{LinkAndPay,Subscription}/CreatePaymentRequest.php`;
+`src/Dto/{LinkAndPay,Subscription}/CheckStatusRequest.php`.
 
 ## PHP 8.1 pitfalls (do not regress)
 

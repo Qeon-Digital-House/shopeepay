@@ -393,6 +393,7 @@ real onboarding flow end-to-end, each step chaining into the next:
    `accountToken`.
 3. **debit/payment-host-to-host** — charges using the `accountToken`.
 4. **debit/status** — queries the debit just attempted.
+5. **registration-account-unbinding** — revokes the `accountToken` (cleanup).
 
 Each step prints its full raw response and is classified `success`,
 `looks-valid-path`, `may-be-wrong-path`, or `indeterminate-*`. Without a real
@@ -405,15 +406,16 @@ creds).
 export SHOPEEPAY_CLIENT_ID=...
 export SHOPEEPAY_SECRET_KEY=...
 export SHOPEEPAY_SUBS_MERCHANT_ID=...
-export SHOPEEPAY_SUBS_STORE_ID=...          # externalStoreId for debit
+export SHOPEEPAY_SUBS_STORE_ID=...          # externalStoreId (debit, status)
 export SHOPEEPAY_PRIVATE_KEY_PATH=./.keys/merchant-private.pem
 export SHOPEEPAY_PUBLIC_KEY_PATH=./.keys/shopeepay-public.pem
 # (or pass PEMs inline via SHOPEEPAY_PRIVATE_KEY / SHOPEEPAY_PUBLIC_KEY)
 
 # Optional, to drive specific steps with real values:
 export SHOPEEPAY_AUTH_CODE=...        # real code from a consent redirect → bind
-export SHOPEEPAY_ACCOUNT_TOKEN=...    # accountToken → debit
-export SHOPEEPAY_ORIGINAL_REF=...     # reference → debit/status
+export SHOPEEPAY_ACCOUNT_TOKEN=...    # accountToken → debit, unbind
+export SHOPEEPAY_ORIGINAL_REF=...     # partnerReferenceNo to query → debit/status
+                                      # (needed for a standalone --only=status)
 
 make probe                               # full flow, human-readable report
 make probe ARGS=--only=bind              # run ONE step in isolation
@@ -421,8 +423,8 @@ make probe ARGS=--json                   # JSON report
 make probe ARGS=--production             # against live API (confirms first)
 ```
 
-`--only=<step>` accepts `auth-code | bind | debit | status | token` (the
-access-token probe always runs since every step needs a token). Use it to
+`--only=<step>` accepts `auth-code | bind | debit | status | unbind | token`
+(the access-token probe always runs since every step needs a token). Use it to
 iterate on a single endpoint without re-running the whole chain.
 
 Place your PEM keys somewhere inside the project tree (e.g. `./.keys/`,
