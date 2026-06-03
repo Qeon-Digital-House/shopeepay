@@ -384,24 +384,46 @@ confirmation: the access-token TTL (assumed 14 minutes), the six
 pinned), and the `channelId` value (`95221`, SNAP BI e-money default).
 
 [`scripts/probe-sandbox.php`](scripts/probe-sandbox.php) issues a single
-access-token request (prints the gateway's `expiresIn`) and POSTs minimal
-probe bodies against every endpoint, classifying each as `looks-valid`,
-`may-be-wrong-path`, or `indeterminate`. The probe is read-only — bodies
-are deliberately incomplete so the gateway rejects them with validation
-errors before any state mutation.
+access-token request (prints the gateway's `expiresIn`) and then walks the
+real onboarding flow end-to-end, each step chaining into the next:
+
+1. **get-auth-code** — signed server-to-server GET; the gateway returns the
+   `authCode` directly in its JSON body.
+2. **registration-account-binding** — exchanges the `authCode` for an
+   `accountToken`.
+3. **debit/payment-host-to-host** — charges using the `accountToken`.
+4. **debit/status** — queries the debit just attempted.
+
+Each step prints its full raw response and is classified `success`,
+`looks-valid-path`, `may-be-wrong-path`, or `indeterminate-*`. Without a real
+`SHOPEEPAY_AUTH_CODE` / `SHOPEEPAY_ACCOUNT_TOKEN`, the later steps send
+deliberately-invalid values so the path is still validated before any state
+mutation; with real values the probe **does** exercise real state (use sandbox
+creds).
 
 ```bash
 export SHOPEEPAY_CLIENT_ID=...
 export SHOPEEPAY_SECRET_KEY=...
 export SHOPEEPAY_SUBS_MERCHANT_ID=...
+export SHOPEEPAY_SUBS_STORE_ID=...          # externalStoreId for debit
 export SHOPEEPAY_PRIVATE_KEY_PATH=./.keys/merchant-private.pem
 export SHOPEEPAY_PUBLIC_KEY_PATH=./.keys/shopeepay-public.pem
 # (or pass PEMs inline via SHOPEEPAY_PRIVATE_KEY / SHOPEEPAY_PUBLIC_KEY)
 
-make probe                       # human-readable report
-php scripts/probe-sandbox.php --json   # JSON report (host PHP)
-php scripts/probe-sandbox.php --production   # against live API (confirms first)
+# Optional, to drive specific steps with real values:
+export SHOPEEPAY_AUTH_CODE=...        # real code from a consent redirect → bind
+export SHOPEEPAY_ACCOUNT_TOKEN=...    # accountToken → debit
+export SHOPEEPAY_ORIGINAL_REF=...     # reference → debit/status
+
+make probe                               # full flow, human-readable report
+make probe ARGS=--only=bind              # run ONE step in isolation
+make probe ARGS=--json                   # JSON report
+make probe ARGS=--production             # against live API (confirms first)
 ```
+
+`--only=<step>` accepts `auth-code | bind | debit | status | token` (the
+access-token probe always runs since every step needs a token). Use it to
+iterate on a single endpoint without re-running the whole chain.
 
 Place your PEM keys somewhere inside the project tree (e.g. `./.keys/`,
 gitignored) so the dev container can reach them via its `/app` bind mount.
@@ -415,5 +437,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## References
 
-- ShopeePay docs: https://product.shopeepay.co.id/integration/api/account-linking/php/
+- ShopeePay docs — Account Linking: https://product.shopeepay.co.id/integration/api/account-linking/php/
+- ShopeePay docs — Subscription (debit/payment-host-to-host request shape): https://product.shopeepay.co.id/integration/api/subscription/
 - Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)

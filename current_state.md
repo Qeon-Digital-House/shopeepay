@@ -1,6 +1,6 @@
 # Current State — ShopeePay PHP SDK
 
-**Snapshot:** 2026-05-28 (post-Probe-tooling). Handoff doc for a fresh Claude session.
+**Snapshot:** 2026-06-03 (probe running against live sandbox). Handoff doc for a fresh Claude session.
 
 ## What this project is
 
@@ -15,16 +15,35 @@ Base URLs: `api.snap.airpay.co.id` (prod), `api.snap.uat.airpay.co.id` (sandbox)
 
 - **Design phase complete.** Plan reviewed via `/office-hours` + `/plan-eng-review`.
 - **Spec review passed:** 2 iterations, final score 8.5/10.
-- **Build-order steps 1–10 done; step 11 tooling landed.** Probe script
-  (`scripts/probe-sandbox.php`) and `make probe` target are built and lint
-  clean — but the probe has NOT been RUN yet (needs sandbox creds the
-  current session doesn't have). Branch `scaffold-shopeepay-sdk`.
-  136 unit tests pass, phpstan level 8 clean.
-- **Next:** RUN the probe (`make probe` with SHOPEEPAY_* env vars set)
-  and reconcile findings — update `Config::$tokenTtlSeconds` if the
-  gateway's `expiresIn` differs from 840s, and update the 6 SNAP-BI-guess
-  paths in `src/Service/AuthCaptureService.php` if any classified as
-  `may-be-wrong-path`. Then 0.1.0 release (step 12).
+- **Build-order steps 1–10 done; step 11 probe RUNNING against live sandbox.**
+  Probe script (`scripts/probe-sandbox.php`) + `make probe` rewritten as an
+  end-to-end account-linking → debit flow probe and is now being driven
+  against the UAT gateway with real creds. 136 unit tests pass, phpstan
+  level 8 clean.
+- **Empirical findings so far (from live probe runs) — see "Verified request
+  shapes" below.** The gateway's field-level `4000702 Invalid Mandatory
+  Field {…}` errors revealed the real request shapes for two endpoints, and
+  they differ from what the SDK DTOs currently emit:
+  - `/v1.0/registration-account-binding`: needs **top-level `merchantId`**;
+    `authCode` and `partnerReferenceNo` are **mutually exclusive** (send
+    exactly one). Path has **no `/bind` suffix**.
+  - `/v1.1/debit/payment-host-to-host`: needs top-level `merchantId`,
+    `externalStoreId`, `amount`, and a mandatory **`urlParams[]`** array
+    (`url` + `type=PAY_RETURN` + `isDeepLink`); **`accountToken` goes inside
+    `additionalInfo`**, not top-level.
+  - get-auth-code returns `authCode` **directly in its JSON body**
+    (`responseCode 2001000`); the probe chains it into bind.
+- **Next:**
+  1. Finish reconciling probe output — capture the gateway `expiresIn`
+     (update `Config::$tokenTtlSeconds` if ≠ 840s) and reclassify the 6
+     `/v1.0/auth/*` paths in `AuthCaptureService.php`.
+  2. **Fix the SDK DTOs to match the verified shapes** (probe-only so far):
+     `BindAccountRequest` (+ `AccountLinkingService::PATH_BIND` → drop
+     `/bind`, add `merchantId`, one-of authCode/partnerReferenceNo) and the
+     LinkAndPay/Subscription `CreatePaymentRequest` (add `merchantId`,
+     `externalStoreId`, `urlParams`; move `accountToken` into
+     `additionalInfo`). Update the corresponding unit tests.
+  3. Then 0.1.0 release (step 12).
 
 ## Source-of-truth files
 
@@ -93,6 +112,47 @@ verify w/ ShopeePay public key. Path-only, no scheme/host.
 Three known-vector tests required in `tests/Unit/Http/SignerTest.php` —
 fixtures in `tests/fixtures/` (test-only PEM key pair).
 
+## Verified request shapes (from live sandbox probe, 2026-06-03)
+
+Confirmed empirically by the probe against the UAT gateway. These are the
+**ground-truth** bodies; the SDK DTOs do not all match yet (see "Next").
+Source: `https://product.shopeepay.co.id/integration/api/subscription/` and
+`.../account-linking/php/`, cross-checked against gateway `4000702` errors.
+
+**get-auth-code** (`GET /v1.0/get-auth-code`, svc 10) — signed server-to-server
+GET, NOT a plain browser redirect. Returns the `authCode` directly in the JSON
+body:
+```json
+{ "responseCode": "2001000", "responseMessage": "Successful",
+  "authCode": "…", "state": "…" }
+```
+
+**registration-account-binding** (`POST /v1.0/registration-account-binding`,
+svc 07) — note: **no `/bind` suffix**. `merchantId` is top-level mandatory;
+`authCode`/`partnerReferenceNo` are **mutually exclusive** (exactly one):
+```json
+{ "merchantId": "Merchant123", "authCode": "ATXGbzzNg5daW" }
+```
+
+**debit/payment-host-to-host** (`POST /v1.1/debit/payment-host-to-host`,
+svc 54) — `urlParams[]` is mandatory; `accountToken` lives inside
+`additionalInfo`:
+```json
+{
+  "partnerReferenceNo": "…",
+  "merchantId": "Merchant123",
+  "externalStoreId": "Store123",
+  "amount": { "value": "10000.00", "currency": "IDR" },
+  "urlParams": [ { "url": "https://…", "type": "PAY_RETURN", "isDeepLink": "N" } ],
+  "additionalInfo": { "accountToken": "…" }
+}
+```
+
+Probe env knobs: `SHOPEEPAY_AUTH_CODE` (real code from a consent redirect —
+required to actually bind when running `--only=bind`), `SHOPEEPAY_ACCOUNT_TOKEN`
+(for debit), `SHOPEEPAY_ORIGINAL_REF` (for `--only=status`). Run a single step
+with `make probe ARGS=--only=<auth-code|bind|debit|status|token>`.
+
 ## Build order
 
 1. ✅ **Scaffold** — `git init`, composer (PSR-4 `ShopeePay\`), phpunit,
@@ -139,22 +199,24 @@ fixtures in `tests/fixtures/` (test-only PEM key pair).
     scripts. Existing references to a `ShopeePay` facade were stripped
     since none exists yet — the v2 Laravel companion package is where
     that ergonomic surface will live.
-11. 🔶 **Sandbox probe** — tooling complete, run pending.
-    `scripts/probe-sandbox.php` is built: it issues one access-token
-    request (capturing the gateway's `expiresIn`), POSTs minimal probe
-    bodies against every endpoint, and classifies each as `looks-valid`
-    / `may-be-wrong-path` / `indeterminate`. Includes a control set of
-    known-good Link & Pay paths so a bad sandbox day doesn't get
-    misread as a path issue. Read-only by construction (probe bodies
-    are deliberately incomplete so the gateway rejects them before any
-    state mutation). Wired as `make probe`; supports `--json` and
-    `--production` (the latter prompts for explicit confirmation).
-    See README "Sandbox probe" section.
-    **To finish step 11:** export the SHOPEEPAY_* env vars, run
-    `make probe`, then reconcile per the "Next" line above.
-    Debit refund window remains the only probe-resistant item — it
-    needs a real settled capture; document in v0.1.0 release notes as
-    a known unknown.
+11. 🔶 **Sandbox probe — RUNNING against live UAT.** `scripts/probe-sandbox.php`
+    was rewritten as an end-to-end flow probe: access-token (captures the
+    gateway's `expiresIn`) → get-auth-code → registration-account-binding →
+    debit/payment-host-to-host → debit/status, each step chaining into the
+    next (authCode → accountToken → referenceNo). Each step dumps its full
+    raw response (`printRawResponse`). Supports `--json`, `--production`
+    (prompts), and **`--only=<step>`** to run a single endpoint in isolation
+    (`make probe ARGS=--only=bind`). `make probe` now forwards
+    `SHOPEEPAY_AUTH_CODE` / `SHOPEEPAY_ACCOUNT_TOKEN` / `SHOPEEPAY_ORIGINAL_REF`
+    into the container.
+    **Findings landed in the probe** (see "Verified request shapes"): the
+    real binding + debit body shapes, confirmed by chasing the gateway's
+    `4000702 Invalid Mandatory Field {…}` errors field-by-field. The probe
+    request bodies now match the gateway; the **SDK DTOs still need the same
+    corrections** (see "Next" item 2).
+    Still to finish: capture `expiresIn` and reclassify the 6 `/v1.0/auth/*`
+    paths. Debit refund window remains probe-resistant (needs a real settled
+    capture) — document in v0.1.0 release notes as a known unknown.
 12. **Release 0.1.0** to Packagist via tag-triggered workflow.
 
 ## Known critical gap to mitigate during impl
@@ -173,12 +235,16 @@ enforcement, concurrent token-refresh mutex.
 
 ## Environment notes
 
-- WSL2 Linux. Host `php` at `/usr/local/bin/php` is **sandboxed** — it can't
-  read `/tmp` or even the project's own `phpunit.xml.dist`, and `phpunit`
-  picks up a stray config at `/var/www/html/rrq-topup/phpunit.xml` if you
-  invoke it directly. **Always use `make test` / `make phpstan`** — those
-  run in the project's Docker container (`shopeepay-dev:8.1`) and work
-  correctly. PHP inside the container is 8.1.34.
+- WSL2 Linux. Host `php` at `/usr/local/bin/php` is **not a real PHP binary**
+  — it is a one-line wrapper that runs `docker exec -i topup-rrq-topup-1 php`,
+  i.e. it shells into a DIFFERENT project's container (rrq-topup) whose bind
+  mount is `/var/www/html/rrq-topup`, so it cannot see this repo's files
+  (`Could not open input file: scripts/probe-sandbox.php`). **Always use the
+  `make` targets** — they run in this project's own dev container via
+  `.docker/docker-compose.dev.yml` (`shopeepay-dev-81`). To lint/run ad hoc:
+  `PHP_VERSION=8.1 DOCKER_UID=$(id -u) DOCKER_GID=$(id -g) docker compose -f
+  .docker/docker-compose.dev.yml -p shopeepay-dev-81 run --rm --entrypoint ""
+  php php -l scripts/probe-sandbox.php`. PHP inside the container is 8.1.x.
 - The gstack helper scripts (`gstack-review-log`, `gstack-telemetry-log`)
   have CRLF line endings and fail with `bash\r: No such file or directory`.
   Not blocking. Review log was written manually to `~/.gstack/reviews/log.jsonl`.
@@ -192,5 +258,7 @@ enforcement, concurrent token-refresh mutex.
 ```
 Read /home/qdh/RRQ/shopeepay/current_state.md, then
 ~/.gstack/projects/shopeepay/qdh-init-design-20260525-151513.md.
-Run `make probe` to finish step 11, then resume at step 12 (release).
+Finish reconciling the probe (capture expiresIn, reclassify /v1.0/auth/*),
+then port the verified binding + debit request shapes from the probe into
+the SDK DTOs ("Next" item 2), then resume at step 12 (release).
 ```
