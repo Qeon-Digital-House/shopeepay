@@ -35,7 +35,7 @@ use ShopeePay\Http\Transport;
 final class AccountLinkingService
 {
     private const PATH_AUTH_CODE = '/v1.0/get-auth-code';
-    private const PATH_BIND      = '/v1.0/registration-account-binding/bind';
+    private const PATH_BIND      = '/v1.0/registration-account-binding';
     private const PATH_UNBIND    = '/v1.0/registration-account-unbinding/unbind';
     private const PATH_INQUIRY   = '/v1.0/registration-account-inquiry/inquiry-status';
 
@@ -110,10 +110,16 @@ final class AccountLinkingService
 
     public function bind(BindAccountRequest $request): BindAccountResponse
     {
+        // Sandbox-verified shape (CLAUDE.md, svc 07): top-level merchantId is
+        // mandatory; authCode and partnerReferenceNo are mutually exclusive, so
+        // we send authCode only — including both yields 4000702.
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_BIND,
-            body:   $request->toArray(),
+            body:   [
+                'authCode'   => $request->authCode,
+                'merchantId' => $this->config->merchantId,
+            ],
         );
         return BindAccountResponse::fromArray($payload);
     }

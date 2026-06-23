@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShopeePay\Service;
 
+use ShopeePay\Config;
 use ShopeePay\Dto\Subscription\CheckStatusRequest;
 use ShopeePay\Dto\Subscription\CheckStatusResponse;
 use ShopeePay\Dto\Subscription\CreatePaymentRequest;
@@ -32,6 +33,7 @@ final class SubscriptionService
     private const PATH_REFUND        = '/v1.0/debit/refund';
 
     public function __construct(
+        private readonly Config $config,
         private readonly Transport $transport,
     ) {
     }
@@ -41,9 +43,25 @@ final class SubscriptionService
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_CREATE,
-            body:   $request->toArray(),
+            body:   array_merge($request->toArray(), $this->merchantFields()),
         );
         return CreatePaymentResponse::fromArray($payload);
+    }
+
+    /**
+     * Top-level merchantId/externalStoreId that every debit endpoint requires
+     * (verified against the sandbox probe, see CLAUDE.md). externalStoreId is
+     * omitted when storeId is not configured rather than sent empty.
+     *
+     * @return array<string, string>
+     */
+    private function merchantFields(): array
+    {
+        $fields = ['merchantId' => $this->config->merchantId];
+        if ($this->config->storeId !== null && trim($this->config->storeId) !== '') {
+            $fields['externalStoreId'] = $this->config->storeId;
+        }
+        return $fields;
     }
 
     public function checkStatus(CheckStatusRequest $request): CheckStatusResponse
@@ -51,7 +69,7 @@ final class SubscriptionService
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_CHECK_STATUS,
-            body:   $request->toArray(),
+            body:   array_merge($request->toArray(), $this->merchantFields()),
         );
         return CheckStatusResponse::fromArray($payload);
     }
@@ -61,7 +79,7 @@ final class SubscriptionService
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_REFUND,
-            body:   $request->toArray(),
+            body:   array_merge($request->toArray(), $this->merchantFields()),
         );
         return RefundResponse::fromArray($payload);
     }

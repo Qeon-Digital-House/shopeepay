@@ -195,10 +195,12 @@ final class AccountLinkingServiceTest extends TestCase
 
         // Verify the right path was POSTed to with the right body.
         $bindRequest = $http->getRequests()[1];
-        self::assertSame('POST',                                              $bindRequest->getMethod());
-        self::assertSame('/v1.0/registration-account-binding/bind',           $bindRequest->getUri()->getPath());
+        self::assertSame('POST',                                  $bindRequest->getMethod());
+        self::assertSame('/v1.0/registration-account-binding',    $bindRequest->getUri()->getPath());
+        // Sandbox-verified shape (svc 07): top-level merchantId is mandatory and
+        // authCode/partnerReferenceNo are mutually exclusive — only authCode is sent.
         self::assertJsonStringEqualsJsonString(
-            '{"authCode":"AUTHCODE_XYZ","partnerReferenceNo":"BIND-1"}',
+            '{"authCode":"AUTHCODE_XYZ","merchantId":"M1234"}',
             (string) $bindRequest->getBody(),
         );
     }
