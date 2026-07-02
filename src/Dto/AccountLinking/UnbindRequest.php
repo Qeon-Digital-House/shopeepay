@@ -37,9 +37,16 @@ final class UnbindRequest
      */
     public function toArray(): array
     {
-        return [
-            'tokenId'            => $this->accountToken,
-            'partnerReferenceNo' => $this->partnerReferenceNo,
-        ];
+        # svc 09 (re-verified against the live sandbox 2026-07-02): identify the binding by
+        # additionalInfo.accountToken OR top-level partnerReferenceNo — but NOT both. Sending
+        # both trips "4000902 Invalid Mandatory Field {accountToken or partnerReferenceNo}".
+        # Proven by probing the same token three ways: accountToken-only -> 2000900 Successful;
+        # partnerReferenceNo-only -> 4040911; both -> 4000902. Prefer accountToken (the reliable
+        # identifier); fall back to partnerReferenceNo only when no token is present.
+        if (trim($this->accountToken) !== '') {
+            return ['additionalInfo' => ['accountToken' => $this->accountToken]];
+        }
+
+        return ['partnerReferenceNo' => $this->partnerReferenceNo];
     }
 }

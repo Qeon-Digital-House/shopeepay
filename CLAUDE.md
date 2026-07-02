@@ -69,8 +69,12 @@ when fixing the SDK, port these shapes and update the unit tests.
   `amount.value` → `4005502 Invalid mandatory field {value}`.
 - **`POST /v1.0/registration-account-unbinding`** (svc 09): **no `/unbind`
   suffix**. Top-level `merchantId` mandatory; identify the binding by
-  `additionalInfo.accountToken` OR top-level `partnerReferenceNo` (at least
-  one; both allowed together, unlike bind).
+  `additionalInfo.accountToken` OR top-level `partnerReferenceNo` —
+  **send exactly one, not both** (re-verified live 2026-07-02; the earlier
+  "both allowed together" note was wrong). Sending both trips `4000902 Invalid
+  Mandatory Field {accountToken or partnerReferenceNo}`. Same token, three ways:
+  accountToken-only → `2000900`; partnerReferenceNo-only → `4040911`; both →
+  `4000902`.
 
 Recurring theme: **every POST endpoint needs top-level `merchantId`**, and most
 also need `externalStoreId`.
