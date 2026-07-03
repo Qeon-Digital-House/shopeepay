@@ -225,9 +225,12 @@ final class AccountLinkingServiceTest extends TestCase
         self::assertSame('SP-UNBIND-1', $resp->referenceNo);
 
         $unbindRequest = $http->getRequests()[1];
-        self::assertSame('/v1.0/registration-account-unbinding/unbind', $unbindRequest->getUri()->getPath());
+        // Sandbox-verified shape (svc 09): path has NO /unbind suffix; top-level
+        // merchantId is mandatory; the binding is identified by
+        // additionalInfo.accountToken (accountToken present → partnerReferenceNo omitted).
+        self::assertSame('/v1.0/registration-account-unbinding', $unbindRequest->getUri()->getPath());
         self::assertJsonStringEqualsJsonString(
-            '{"tokenId":"tok_live_abc","partnerReferenceNo":"UNBIND-1"}',
+            '{"merchantId":"M1234","additionalInfo":{"accountToken":"tok_live_abc"}}',
             (string) $unbindRequest->getBody(),
         );
     }

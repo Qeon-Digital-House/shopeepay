@@ -36,7 +36,7 @@ final class AccountLinkingService
 {
     private const PATH_AUTH_CODE = '/v1.0/get-auth-code';
     private const PATH_BIND      = '/v1.0/registration-account-binding';
-    private const PATH_UNBIND    = '/v1.0/registration-account-unbinding/unbind';
+    private const PATH_UNBIND    = '/v1.0/registration-account-unbinding';
     private const PATH_INQUIRY   = '/v1.0/registration-account-inquiry/inquiry-status';
 
     public function __construct(
@@ -126,10 +126,14 @@ final class AccountLinkingService
 
     public function unbind(UnbindRequest $request): UnbindResponse
     {
+        // Sandbox-verified shape (CLAUDE.md, svc 09): path has NO /unbind suffix,
+        // top-level merchantId is mandatory, and the binding is identified by
+        // exactly one of additionalInfo.accountToken XOR partnerReferenceNo
+        // (UnbindRequest::toArray() already enforces the one-of rule).
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_UNBIND,
-            body:   $request->toArray(),
+            body:   array_merge(['merchantId' => $this->config->merchantId], $request->toArray()),
         );
         return UnbindResponse::fromArray($payload);
     }
