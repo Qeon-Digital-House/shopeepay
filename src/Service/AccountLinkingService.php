@@ -37,7 +37,7 @@ final class AccountLinkingService
     private const PATH_AUTH_CODE = '/v1.0/get-auth-code';
     private const PATH_BIND      = '/v1.0/registration-account-binding';
     private const PATH_UNBIND    = '/v1.0/registration-account-unbinding';
-    private const PATH_INQUIRY   = '/v1.0/registration-account-inquiry/inquiry-status';
+    private const PATH_INQUIRY   = '/v1.0/registration-account-inquiry';
 
     public function __construct(
         private readonly Config $config,
@@ -140,10 +140,13 @@ final class AccountLinkingService
 
     public function inquiry(InquiryRequest $request): InquiryResponse
     {
+        // Sandbox-verified shape (svc 08, 2026-07-09): path has NO /inquiry-status
+        // suffix, top-level merchantId is mandatory, and the binding is identified by
+        // additionalInfo.accountToken (partnerReferenceNo alone -> 4040811). Mirrors unbind.
         $payload = $this->transport->send(
             method: 'POST',
             path:   self::PATH_INQUIRY,
-            body:   $request->toArray(),
+            body:   array_merge(['merchantId' => $this->config->merchantId], $request->toArray()),
         );
         return InquiryResponse::fromArray($payload);
     }

@@ -244,20 +244,25 @@ final class AccountLinkingServiceTest extends TestCase
             'responseMessage'    => 'Successful',
             'referenceNo'        => 'SP-INQ-1',
             'partnerReferenceNo' => 'INQ-1',
-            'accountStatus'      => 'ACTIVE',
+            'additionalInfo'     => ['bindingStatus' => 1],
         ])));
 
         $resp = $service->inquiry(new InquiryRequest(
-            accountToken:       'tok_live_abc',
-            partnerReferenceNo: 'INQ-1',
+            accountToken: 'tok_live_abc',
         ));
 
-        self::assertSame('ACTIVE', $resp->accountStatus);
+        self::assertSame(1, $resp->bindingStatus);
         self::assertTrue($resp->isActive());
+        # Sandbox-verified (2026-07-09): path has NO /inquiry-status suffix.
         self::assertSame(
-            '/v1.0/registration-account-inquiry/inquiry-status',
+            '/v1.0/registration-account-inquiry',
             $http->getRequests()[1]->getUri()->getPath(),
         );
+        # Body identifies the binding by additionalInfo.accountToken + top-level merchantId.
+        $body = json_decode((string) $http->getRequests()[1]->getBody(), true);
+        self::assertSame('tok_live_abc', $body['additionalInfo']['accountToken']);
+        self::assertArrayHasKey('merchantId', $body);
+        self::assertArrayNotHasKey('partnerReferenceNo', $body);
     }
 
     public function testInquiryIsActiveIsCaseInsensitiveAndStrict(): void
@@ -267,10 +272,10 @@ final class AccountLinkingServiceTest extends TestCase
         $http->addResponse(new Response(200, [], (string) json_encode([
             'responseCode'       => '2000800',
             'responseMessage'    => 'Successful',
-            'accountStatus'      => 'inactive',
+            'additionalInfo'     => ['bindingStatus' => 0],
         ])));
 
-        $resp = $service->inquiry(new InquiryRequest('tok_live_abc', 'INQ-2'));
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
 
         self::assertFalse($resp->isActive());
     }
