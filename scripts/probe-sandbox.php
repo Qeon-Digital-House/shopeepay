@@ -46,7 +46,7 @@ declare(strict_types=1);
  *   php scripts/probe-sandbox.php --production       # asks for confirmation
  *   php scripts/probe-sandbox.php --json             # report as JSON
  *   php scripts/probe-sandbox.php --only=bind        # run ONE flow step
- *       (steps: auth-code | bind | debit | status | unbind | token; the
+ *       (steps: auth-code | bind | debit | status | inquiry | unbind | token; the
  *        access-token probe always runs. via Make: make probe ARGS=--only=bind)
  *
  * Env vars (same convention as .env.example / examples/_bootstrap.php):
@@ -95,6 +95,7 @@ $stepAliases = [
     'bind'         => 'bind',
     'debit'        => 'debit',
     'status'       => 'debitStatus', 'debit-status' => 'debitStatus',
+    'inquiry'      => 'inquiry', 'inquiry-status' => 'inquiry', 'account-inquiry' => 'inquiry',
     'unbind'       => 'unbind', 'unlink' => 'unbind', 'unbinding' => 'unbind',
     'token'        => 'token',  // access-token probe only, no flow step
 ];
@@ -169,7 +170,7 @@ $accountLinking = new AccountLinkingService($config, $transport);
 // cache) so we can read the gateway's expiresIn verbatim.
 $tokenProbe = probeAccessToken($config, $headerBuilder);
 
-// ── probe: flow (get-auth-code → bind → debit → status → unbind) ───────
+// ── probe: flow (get-auth-code → bind → debit → status → inquiry → unbind) ───────
 // Each step chains into the next: bind's accountToken feeds debit's
 // body, debit's partnerReferenceNo feeds the status query, and bind's
 // accountToken also feeds the unbind cleanup.
@@ -183,6 +184,7 @@ $flow = [
     'bind'        => null,
     'debit'       => null,
     'debitStatus' => null,
+    'inquiry'     => null,
     'unbind'      => null,
 ];
 
@@ -233,7 +235,17 @@ if ($wantStep('debitStatus')) {
     );
 }
 
-// 5. registration-account-unbinding — revoke the accountToken (cleanup).
+// 5. registration-account-inquiry — check the binding status BEFORE unbind, so
+//    the full chain inquires a still-active binding (expect 2000800 with
+//    additionalInfo.bindingStatus = 1). svc 08 identifies the binding by
+//    additionalInfo.accountToken alone.
+if ($wantStep('inquiry')) {
+    $accountToken = ($flow['bind']['accountToken'] ?? '')
+        ?: ((string) (getenv('SHOPEEPAY_ACCOUNT_TOKEN') ?: ''));
+    $flow['inquiry'] = probeInquiry($transport, $config->merchantId, $accountToken);
+}
+
+// 6. registration-account-unbinding — revoke the accountToken (cleanup).
 //    Runs last in the full chain so it tears down the binding created in
 //    step 2. When no accountToken is available it falls back to a
 //    partnerReferenceNo so the endpoint shape is still validated.
@@ -568,6 +580,22 @@ function probeUnbind(Transport $transport, string $merchantId, string $accountTo
     return $r;
 }
 
+function probeInquiry(Transport $transport, string $merchantId, string $accountToken): array
+{
+    // /v1.0/registration-account-inquiry (NO /inquiry-status suffix). merchantId
+    // is top-level mandatory; the binding is identified by additionalInfo.accountToken
+    // ALONE (partnerReferenceNo alone -> 4040811; both together -> 4000802). A success
+    // (2000800) carries additionalInfo.bindingStatus (1 = active). When no accountToken
+    // is available we still send the shape so the endpoint/path is exercised.
+    $body = ['merchantId' => $merchantId];
+    if ($accountToken !== '') {
+        $body['additionalInfo'] = ['accountToken' => $accountToken];
+    }
+    $r = probeRequest($transport, '/v1.0/registration-account-inquiry', $body);
+    $r['accountTokenProvided'] = $accountToken !== '';
+    return $r;
+}
+
 /**
  * Generic POST-and-classify helper. The caller controls the body so
  * each step can send the shape the gateway expects.
@@ -757,9 +785,10 @@ function printReport(array $report): void
     $bp = $report['flow']['bind'];
     $dp = $report['flow']['debit'];
     $sp = $report['flow']['debitStatus'];
+    $ip = $report['flow']['inquiry'];
     $up = $report['flow']['unbind'];
 
-    if ($ga !== null || $bp !== null || $dp !== null || $sp !== null || $up !== null) {
+    if ($ga !== null || $bp !== null || $dp !== null || $sp !== null || $ip !== null || $up !== null) {
         echo "--- Flow Probe ---\n";
     }
 
@@ -800,8 +829,17 @@ function printReport(array $report): void
         printRawResponse($sp['raw']);
     }
 
+    if ($ip !== null) {
+        echo sprintf("\n5. registration-account-inquiry  %s  (HTTP %s)\n",
+            $ip['classification'], $ip['httpStatus'] ?? '?');
+        echo "   path: {$ip['path']}\n";
+        echo "   " . ($ip['responseCode'] ?: '?') . ' ' . trim((string) $ip['responseMessage']) . "\n";
+        echo "   accountToken supplied: " . ($ip['accountTokenProvided'] ? 'yes' : 'no — sent merchantId only') . "\n";
+        printRawResponse($ip['raw']);
+    }
+
     if ($up !== null) {
-        echo sprintf("\n5. registration-account-unbinding %s  (HTTP %s)\n",
+        echo sprintf("\n6. registration-account-unbinding %s  (HTTP %s)\n",
             $up['classification'], $up['httpStatus'] ?? '?');
         echo "   path: {$up['path']}\n";
         echo "   " . ($up['responseCode'] ?: '?') . ' ' . trim((string) $up['responseMessage']) . "\n";
