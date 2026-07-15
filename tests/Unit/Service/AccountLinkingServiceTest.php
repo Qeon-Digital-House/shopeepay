@@ -280,6 +280,45 @@ final class AccountLinkingServiceTest extends TestCase
         self::assertFalse($resp->isActive());
     }
 
+    public function testInquiryParsesWalletBalance(): void
+    {
+        // Sandbox-verified (2026-07-15): a live inquiry additionalInfo carries walletBalance (decimal
+        // IDR string) and spaylaterInfo.availableBalance. Both are surfaced as typed properties.
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(200, [], (string) json_encode([
+            'responseCode'    => '2000800',
+            'responseMessage' => 'Successful',
+            'additionalInfo'  => [
+                'bindingStatus'  => 1,
+                'walletBalance'  => '9000.00',
+                'spaylaterInfo'  => ['availableBalance' => '0.00', 'statusInfo' => 'inactive'],
+            ],
+        ])));
+
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
+
+        self::assertSame('9000.00', $resp->walletBalance);
+        self::assertSame('0.00', $resp->spaylaterAvailableBalance);
+    }
+
+    public function testInquiryWalletBalanceIsNullWhenAbsent(): void
+    {
+        // A response without balance fields (e.g. older/partial payloads) leaves both null.
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(200, [], (string) json_encode([
+            'responseCode'    => '2000800',
+            'responseMessage' => 'Successful',
+            'additionalInfo'  => ['bindingStatus' => 1],
+        ])));
+
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
+
+        self::assertNull($resp->walletBalance);
+        self::assertNull($resp->spaylaterAvailableBalance);
+    }
+
     public function testBindPropagatesApiException(): void
     {
         // Expired authCode — SNAP BI returns an HTTP 4xx with a 4030700-class
