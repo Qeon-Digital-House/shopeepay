@@ -33,8 +33,12 @@ final class CreatePaymentRequest
     /** @var array<string, mixed> */
     public readonly array $additionalInfo;
 
+    /** @var array<int, array<string, mixed>> */
+    public readonly array $urlParam;
+
     /**
-     * @param array<string, mixed> $additionalInfo
+     * @param array<string, mixed>            $additionalInfo
+     * @param array<int, array<string, mixed>> $urlParam
      */
     public function __construct(
         string $partnerReferenceNo,
@@ -42,6 +46,7 @@ final class CreatePaymentRequest
         string $accountToken,
         string $subscriptionId,
         array $additionalInfo = [],
+        array $urlParam = [],
     ) {
         if (trim($partnerReferenceNo) === '') {
             throw new InvalidArgumentException('partnerReferenceNo must not be empty');
@@ -58,6 +63,7 @@ final class CreatePaymentRequest
         $this->accountToken       = $accountToken;
         $this->subscriptionId     = $subscriptionId;
         $this->additionalInfo     = $additionalInfo;
+        $this->urlParam           = $urlParam;
     }
 
     /**
@@ -65,15 +71,18 @@ final class CreatePaymentRequest
      */
     public function toArray(): array
     {
-        $body = [
+        // Per the sandbox-verified shape (CLAUDE.md, svc 54): accountToken lives
+        // inside additionalInfo, not top-level; subscriptionId disambiguates this
+        // from Link & Pay; urlParams is always emitted.
+        $additionalInfo = $this->additionalInfo;
+        $additionalInfo['accountToken'] = $this->accountToken;
+
+        return [
             'partnerReferenceNo' => $this->partnerReferenceNo,
             'amount'             => $this->amount->toArray(),
-            'accountToken'       => $this->accountToken,
             'subscriptionId'     => $this->subscriptionId,
+            'urlParams'          => $this->urlParam,
+            'additionalInfo'     => $additionalInfo,
         ];
-        if ($this->additionalInfo !== []) {
-            $body['additionalInfo'] = $this->additionalInfo;
-        }
-        return $body;
     }
 }

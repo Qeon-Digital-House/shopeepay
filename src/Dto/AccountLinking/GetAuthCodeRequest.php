@@ -38,6 +38,14 @@ final class GetAuthCodeRequest
     public readonly ?string $partnerReferenceNo;
     public readonly ?string $merchantId;
 
+    /**
+     * Optional phone number for ShopeePay to validate the linked wallet against
+     * the user's ShopeePay account. Country code without `+` (e.g. Indonesian
+     * `82112345678` is passed as `6282112345678`). When set, the service sends
+     * it as a signed `seamlessData` object. Null omits seamless validation.
+     */
+    public readonly ?string $mobileNumber;
+
     /** @var list<string> */
     public readonly array $scopes;
 
@@ -49,6 +57,11 @@ final class GetAuthCodeRequest
      *                                          (e.g. `['ACCOUNT_BINDING']`).
      *                                          Pass an empty list to send no
      *                                          `scopes` param.
+     * @param ?string      $mobileNumber        Optional. Phone number (country
+     *                                          code without `+`, e.g.
+     *                                          `6282112345678`) for ShopeePay to
+     *                                          validate against the user's
+     *                                          account. Null omits it.
      */
     public function __construct(
         string $redirectUrl,
@@ -56,6 +69,7 @@ final class GetAuthCodeRequest
         ?string $partnerReferenceNo = null,
         ?string $merchantId = null,
         array $scopes = [],
+        ?string $mobileNumber = null,
     ) {
         if (trim($redirectUrl) === '') {
             throw new InvalidArgumentException('redirectUrl must not be empty');
@@ -89,12 +103,18 @@ final class GetAuthCodeRequest
                 ));
             }
         }
+        if ($mobileNumber !== null && preg_match('/^\d+$/', $mobileNumber) !== 1) {
+            throw new InvalidArgumentException(
+                'mobileNumber must be null or digits only (country code without "+", e.g. 6282112345678)',
+            );
+        }
 
         $this->redirectUrl        = $redirectUrl;
         $this->state              = $state;
         $this->partnerReferenceNo = $partnerReferenceNo;
         $this->merchantId         = $merchantId;
         $this->scopes             = array_values($scopes);
+        $this->mobileNumber       = $mobileNumber;
     }
 
     /**

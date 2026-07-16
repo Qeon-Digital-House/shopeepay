@@ -9,22 +9,19 @@ use InvalidArgumentException;
 /**
  * Check the status of a bound `accountToken`. Service code 08. Synchronous.
  *
- * Use this when your records say the binding is active but you want to
- * confirm before initiating a large transaction. The gateway returns the
- * current account status (Active, Inactive, etc.) in the response.
+ * Sandbox-verified (2026-07-09): the binding is identified by
+ * additionalInfo.accountToken; partnerReferenceNo alone yields 4040811. The
+ * top-level merchantId is added by AccountLinkingService::inquiry().
  */
 final class InquiryRequest
 {
     public readonly string $accountToken;
-    public readonly string $partnerReferenceNo;
+    public readonly ?string $partnerReferenceNo;
 
-    public function __construct(string $accountToken, string $partnerReferenceNo)
+    public function __construct(string $accountToken, ?string $partnerReferenceNo = null)
     {
-        if (trim($accountToken) === '') {
-            throw new InvalidArgumentException('accountToken must not be empty');
-        }
-        if (trim($partnerReferenceNo) === '') {
-            throw new InvalidArgumentException('partnerReferenceNo must not be empty');
+        if (trim($accountToken) === "") {
+            throw new InvalidArgumentException("accountToken must not be empty");
         }
 
         $this->accountToken       = $accountToken;
@@ -36,9 +33,13 @@ final class InquiryRequest
      */
     public function toArray(): array
     {
-        return [
-            'tokenId'            => $this->accountToken,
-            'partnerReferenceNo' => $this->partnerReferenceNo,
+        $body = [
+            "additionalInfo" => ["accountToken" => $this->accountToken],
         ];
+        if ($this->partnerReferenceNo !== null && trim($this->partnerReferenceNo) !== "") {
+            $body["partnerReferenceNo"] = $this->partnerReferenceNo;
+        }
+
+        return $body;
     }
 }

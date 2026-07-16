@@ -39,3 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records the gateway's `expiresIn` and classifies each AuthCapture path
   as valid / may-be-wrong / indeterminate. Used to lock the 6 SNAP-BI
   guesses ahead of v0.1.0 release.
+- `InquiryResponse` now exposes the linked account's balance from the
+  svc 08 `additionalInfo`: `walletBalance` (decimal IDR string) and
+  `spaylaterAvailableBalance` (SPayLater `availableBalance`). Sandbox-verified
+  2026-07-15; both are null when the gateway omits them.

@@ -17,15 +17,28 @@ use InvalidArgumentException;
 final class UnbindRequest
 {
     public readonly string $accountToken;
-    public readonly string $partnerReferenceNo;
+    public readonly ?string $partnerReferenceNo;
 
-    public function __construct(string $accountToken, string $partnerReferenceNo)
+    /**
+     * svc 09 identifies the binding by EITHER accountToken OR partnerReferenceNo
+     * (never both — see toArray()). accountToken is the reliable identifier and
+     * is what toArray() prefers, so partnerReferenceNo is optional: pass just the
+     * token and leave partnerReferenceNo null. At least one must be present.
+     */
+    public function __construct(string $accountToken, ?string $partnerReferenceNo = null)
     {
-        if (trim($accountToken) === '') {
-            throw new InvalidArgumentException('accountToken must not be empty');
+        $hasToken = trim($accountToken) !== '';
+        $hasRef   = $partnerReferenceNo !== null && trim($partnerReferenceNo) !== '';
+
+        if (!$hasToken && !$hasRef) {
+            throw new InvalidArgumentException(
+                'Provide accountToken or partnerReferenceNo to identify the binding to unbind',
+            );
         }
-        if (trim($partnerReferenceNo) === '') {
-            throw new InvalidArgumentException('partnerReferenceNo must not be empty');
+        if ($partnerReferenceNo !== null && trim($partnerReferenceNo) === '') {
+            throw new InvalidArgumentException(
+                'partnerReferenceNo must be null or non-empty (not a whitespace string)',
+            );
         }
 
         $this->accountToken       = $accountToken;
@@ -37,9 +50,16 @@ final class UnbindRequest
      */
     public function toArray(): array
     {
-        return [
-            'tokenId'            => $this->accountToken,
-            'partnerReferenceNo' => $this->partnerReferenceNo,
-        ];
+        # svc 09 (re-verified against the live sandbox 2026-07-02): identify the binding by
+        # additionalInfo.accountToken OR top-level partnerReferenceNo — but NOT both. Sending
+        # both trips "4000902 Invalid Mandatory Field {accountToken or partnerReferenceNo}".
+        # Proven by probing the same token three ways: accountToken-only -> 2000900 Successful;
+        # partnerReferenceNo-only -> 4040911; both -> 4000902. Prefer accountToken (the reliable
+        # identifier); fall back to partnerReferenceNo only when no token is present.
+        if (trim($this->accountToken) !== '') {
+            return ['additionalInfo' => ['accountToken' => $this->accountToken]];
+        }
+
+        return ['partnerReferenceNo' => $this->partnerReferenceNo];
     }
 }

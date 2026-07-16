@@ -195,10 +195,12 @@ final class AccountLinkingServiceTest extends TestCase
 
         // Verify the right path was POSTed to with the right body.
         $bindRequest = $http->getRequests()[1];
-        self::assertSame('POST',                                              $bindRequest->getMethod());
-        self::assertSame('/v1.0/registration-account-binding/bind',           $bindRequest->getUri()->getPath());
+        self::assertSame('POST',                                  $bindRequest->getMethod());
+        self::assertSame('/v1.0/registration-account-binding',    $bindRequest->getUri()->getPath());
+        // Sandbox-verified shape (svc 07): top-level merchantId is mandatory and
+        // authCode/partnerReferenceNo are mutually exclusive — only authCode is sent.
         self::assertJsonStringEqualsJsonString(
-            '{"authCode":"AUTHCODE_XYZ","partnerReferenceNo":"BIND-1"}',
+            '{"authCode":"AUTHCODE_XYZ","merchantId":"M1234"}',
             (string) $bindRequest->getBody(),
         );
     }
@@ -223,9 +225,12 @@ final class AccountLinkingServiceTest extends TestCase
         self::assertSame('SP-UNBIND-1', $resp->referenceNo);
 
         $unbindRequest = $http->getRequests()[1];
-        self::assertSame('/v1.0/registration-account-unbinding/unbind', $unbindRequest->getUri()->getPath());
+        // Sandbox-verified shape (svc 09): path has NO /unbind suffix; top-level
+        // merchantId is mandatory; the binding is identified by
+        // additionalInfo.accountToken (accountToken present → partnerReferenceNo omitted).
+        self::assertSame('/v1.0/registration-account-unbinding', $unbindRequest->getUri()->getPath());
         self::assertJsonStringEqualsJsonString(
-            '{"tokenId":"tok_live_abc","partnerReferenceNo":"UNBIND-1"}',
+            '{"merchantId":"M1234","additionalInfo":{"accountToken":"tok_live_abc"}}',
             (string) $unbindRequest->getBody(),
         );
     }
@@ -239,20 +244,25 @@ final class AccountLinkingServiceTest extends TestCase
             'responseMessage'    => 'Successful',
             'referenceNo'        => 'SP-INQ-1',
             'partnerReferenceNo' => 'INQ-1',
-            'accountStatus'      => 'ACTIVE',
+            'additionalInfo'     => ['bindingStatus' => 1],
         ])));
 
         $resp = $service->inquiry(new InquiryRequest(
-            accountToken:       'tok_live_abc',
-            partnerReferenceNo: 'INQ-1',
+            accountToken: 'tok_live_abc',
         ));
 
-        self::assertSame('ACTIVE', $resp->accountStatus);
+        self::assertSame(1, $resp->bindingStatus);
         self::assertTrue($resp->isActive());
+        # Sandbox-verified (2026-07-09): path has NO /inquiry-status suffix.
         self::assertSame(
-            '/v1.0/registration-account-inquiry/inquiry-status',
+            '/v1.0/registration-account-inquiry',
             $http->getRequests()[1]->getUri()->getPath(),
         );
+        # Body identifies the binding by additionalInfo.accountToken + top-level merchantId.
+        $body = json_decode((string) $http->getRequests()[1]->getBody(), true);
+        self::assertSame('tok_live_abc', $body['additionalInfo']['accountToken']);
+        self::assertArrayHasKey('merchantId', $body);
+        self::assertArrayNotHasKey('partnerReferenceNo', $body);
     }
 
     public function testInquiryIsActiveIsCaseInsensitiveAndStrict(): void
@@ -262,12 +272,51 @@ final class AccountLinkingServiceTest extends TestCase
         $http->addResponse(new Response(200, [], (string) json_encode([
             'responseCode'       => '2000800',
             'responseMessage'    => 'Successful',
-            'accountStatus'      => 'inactive',
+            'additionalInfo'     => ['bindingStatus' => 0],
         ])));
 
-        $resp = $service->inquiry(new InquiryRequest('tok_live_abc', 'INQ-2'));
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
 
         self::assertFalse($resp->isActive());
+    }
+
+    public function testInquiryParsesWalletBalance(): void
+    {
+        // Sandbox-verified (2026-07-15): a live inquiry additionalInfo carries walletBalance (decimal
+        // IDR string) and spaylaterInfo.availableBalance. Both are surfaced as typed properties.
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(200, [], (string) json_encode([
+            'responseCode'    => '2000800',
+            'responseMessage' => 'Successful',
+            'additionalInfo'  => [
+                'bindingStatus'  => 1,
+                'walletBalance'  => '9000.00',
+                'spaylaterInfo'  => ['availableBalance' => '0.00', 'statusInfo' => 'inactive'],
+            ],
+        ])));
+
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
+
+        self::assertSame('9000.00', $resp->walletBalance);
+        self::assertSame('0.00', $resp->spaylaterAvailableBalance);
+    }
+
+    public function testInquiryWalletBalanceIsNullWhenAbsent(): void
+    {
+        // A response without balance fields (e.g. older/partial payloads) leaves both null.
+        [$service, $http] = $this->build();
+        $http->addResponse($this->tokenResponse('tk-1'));
+        $http->addResponse(new Response(200, [], (string) json_encode([
+            'responseCode'    => '2000800',
+            'responseMessage' => 'Successful',
+            'additionalInfo'  => ['bindingStatus' => 1],
+        ])));
+
+        $resp = $service->inquiry(new InquiryRequest('tok_live_abc'));
+
+        self::assertNull($resp->walletBalance);
+        self::assertNull($resp->spaylaterAvailableBalance);
     }
 
     public function testBindPropagatesApiException(): void
@@ -294,6 +343,87 @@ final class AccountLinkingServiceTest extends TestCase
         $this->expectExceptionMessage('authCode must not be empty');
 
         new BindAccountRequest('   ', 'BIND-1');
+    }
+
+    public function testBuildAuthCodeUrlIncludesSignedSeamlessDataWhenMobileNumberSet(): void
+    {
+        // When a mobileNumber is supplied, ShopeePay is asked to validate the
+        // linked wallet: seamlessData (the JSON) plus seamlessSign (RSA-SHA256
+        // over the URL-encoded JSON) must appear in the query.
+        [$service] = $this->build();
+        $url = $service->buildAuthCodeUrl(new GetAuthCodeRequest(
+            redirectUrl:  'https://merchant.example/cb',
+            state:        'st-seamless',
+            scopes:       ['ACCOUNT_BINDING'],
+            mobileNumber: '6282112345678',
+        ));
+
+        parse_str(parse_url($url, PHP_URL_QUERY) ?: '', $q);
+        self::assertSame('{"mobileNumber":"6282112345678"}', $q['seamlessData'] ?? null);
+        self::assertArrayHasKey('seamlessSign', $q);
+        $seamlessSign = $q['seamlessSign'];
+        self::assertIsString($seamlessSign);
+        self::assertNotEmpty($seamlessSign);
+
+        // seamlessSign must verify against the merchant public key over the
+        // URL-encoded seamlessData JSON — proving the signed input shape.
+        $pub = (string) file_get_contents(self::FIXTURES . '/merchant-public-test.pem');
+        $signInput = rawurlencode('{"mobileNumber":"6282112345678"}');
+        $ok = openssl_verify(
+            $signInput,
+            base64_decode($seamlessSign, true) ?: '',
+            $pub,
+            OPENSSL_ALGO_SHA256,
+        );
+        self::assertSame(1, $ok, 'seamlessSign should verify over the URL-encoded JSON');
+    }
+
+    public function testBuildAuthCodeUrlOmitsSeamlessDataWhenMobileNumberNull(): void
+    {
+        [$service] = $this->build();
+        $url = $service->buildAuthCodeUrl(new GetAuthCodeRequest(
+            redirectUrl: 'https://merchant.example/cb',
+            state:       'st-no-seamless',
+            scopes:      ['ACCOUNT_BINDING'],
+        ));
+
+        parse_str(parse_url($url, PHP_URL_QUERY) ?: '', $q);
+        self::assertArrayNotHasKey('seamlessData', $q);
+        self::assertArrayNotHasKey('seamlessSign', $q);
+    }
+
+    public function testGetAuthCodeRequestRejectsNonDigitMobileNumber(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('mobileNumber must be null or digits only');
+
+        new GetAuthCodeRequest(
+            redirectUrl:  'https://merchant.example/cb',
+            state:        'st-1',
+            mobileNumber: '+62 812-3456',
+        );
+    }
+
+    public function testUnbindRequestAcceptsAccountTokenOnly(): void
+    {
+        // partnerReferenceNo is optional: the token alone identifies the binding,
+        // and toArray() must emit only additionalInfo.accountToken (never both,
+        // which the gateway rejects with 4000902).
+        $req = new UnbindRequest('tok_live_abc');
+
+        self::assertNull($req->partnerReferenceNo);
+        self::assertSame(
+            ['additionalInfo' => ['accountToken' => 'tok_live_abc']],
+            $req->toArray(),
+        );
+    }
+
+    public function testUnbindRequestRejectsWhenNoIdentifierGiven(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Provide accountToken or partnerReferenceNo');
+
+        new UnbindRequest('   ', null);
     }
 
     // ─── helpers ────────────────────────────────────────────────────────────

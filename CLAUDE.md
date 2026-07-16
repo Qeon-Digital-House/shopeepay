@@ -67,10 +67,21 @@ when fixing the SDK, port these shapes and update the unit tests.
   `merchantId`, `externalStoreId`, `serviceCode` (the queried txn's service,
   e.g. `54`), and an **`amount`** object (`value`/`currency`). Missing
   `amount.value` → `4005502 Invalid mandatory field {value}`.
+- **`POST /v1.0/registration-account-inquiry`** (svc 08): **no `/inquiry-status`
+  suffix** (live-verified 2026-07-09). Top-level `merchantId` mandatory; identify the
+  binding by **`additionalInfo.accountToken` only** — `partnerReferenceNo` alone →
+  `4040811 Account Information Invalid`; both together → `4000802 Invalid Mandatory
+  Field {accountToken or partnerReferenceNo}`. Success is `2000800` with the binding
+  state in **`additionalInfo.bindingStatus`** (`1` = active), NOT a top-level
+  `accountStatus`.
 - **`POST /v1.0/registration-account-unbinding`** (svc 09): **no `/unbind`
   suffix**. Top-level `merchantId` mandatory; identify the binding by
-  `additionalInfo.accountToken` OR top-level `partnerReferenceNo` (at least
-  one; both allowed together, unlike bind).
+  `additionalInfo.accountToken` OR top-level `partnerReferenceNo` —
+  **send exactly one, not both** (re-verified live 2026-07-02; the earlier
+  "both allowed together" note was wrong). Sending both trips `4000902 Invalid
+  Mandatory Field {accountToken or partnerReferenceNo}`. Same token, three ways:
+  accountToken-only → `2000900`; partnerReferenceNo-only → `4040911`; both →
+  `4000902`.
 
 Recurring theme: **every POST endpoint needs top-level `merchantId`**, and most
 also need `externalStoreId`.

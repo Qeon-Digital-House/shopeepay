@@ -58,7 +58,12 @@ final class SubscriptionServiceTest extends TestCase
         self::assertSame('/v1.1/debit/payment-host-to-host', $req->getUri()->getPath());
         $body = (array) json_decode((string) $req->getBody(), true);
         self::assertSame('SUB-2026-7',  $body['subscriptionId']);
-        self::assertSame('tok_live_abc', $body['accountToken']);
+        // Sandbox-verified shape (svc 54): accountToken lives inside additionalInfo,
+        // top-level merchantId is mandatory, and externalStoreId is omitted when
+        // no storeId is configured.
+        self::assertSame('tok_live_abc', $body['additionalInfo']['accountToken']);
+        self::assertSame('M1234', $body['merchantId']);
+        self::assertArrayNotHasKey('externalStoreId', $body);
         self::assertSame(['value' => '99000.00', 'currency' => 'IDR'], $body['amount']);
     }
 
@@ -199,7 +204,7 @@ final class SubscriptionServiceTest extends TestCase
         $headerBuilder = new HeaderBuilder($config, new Signer());
         $atm           = new AccessTokenManager($config, $headerBuilder);
         $transport     = new Transport($config, $headerBuilder, $atm);
-        $service       = new SubscriptionService($transport);
+        $service       = new SubscriptionService($config, $transport);
 
         return [$service, $http];
     }

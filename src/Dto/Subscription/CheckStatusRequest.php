@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShopeePay\Dto\Subscription;
 
 use InvalidArgumentException;
+use ShopeePay\Dto\Common\Money;
 
 /**
  * Poll the status of a Subscription debit attempt. Service code 55,
@@ -14,6 +15,9 @@ use InvalidArgumentException;
  * Caller MUST supply at least one of `originalReferenceNo` (ShopeePay's
  * id) or `originalPartnerReferenceNo` (caller's id). serviceCode defaults
  * to "54" (the subscription-debit create). For refund status use "58".
+ *
+ * `amount` is mandatory on this endpoint (verified against the official docs
+ * and CLAUDE.md: a missing value trips `4005502 Invalid mandatory field {value}`).
  */
 final class CheckStatusRequest
 {
@@ -23,11 +27,13 @@ final class CheckStatusRequest
     public readonly ?string $originalReferenceNo;
     public readonly ?string $originalPartnerReferenceNo;
     public readonly string $serviceCode;
+    public readonly ?Money $amount;
 
     public function __construct(
         ?string $originalReferenceNo = null,
         ?string $originalPartnerReferenceNo = null,
         string $serviceCode = self::SVC_CREATE,
+        ?Money $amount = null,
     ) {
         if (($originalReferenceNo === null || trim($originalReferenceNo) === '')
             && ($originalPartnerReferenceNo === null || trim($originalPartnerReferenceNo) === '')
@@ -43,6 +49,7 @@ final class CheckStatusRequest
         $this->originalReferenceNo        = $originalReferenceNo;
         $this->originalPartnerReferenceNo = $originalPartnerReferenceNo;
         $this->serviceCode                = $serviceCode;
+        $this->amount                     = $amount;
     }
 
     /**
@@ -56,6 +63,9 @@ final class CheckStatusRequest
         }
         if ($this->originalPartnerReferenceNo !== null) {
             $body['originalPartnerReferenceNo'] = $this->originalPartnerReferenceNo;
+        }
+        if ($this->amount !== null) {
+            $body['amount'] = $this->amount->toArray();
         }
         return $body;
     }

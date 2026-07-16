@@ -25,6 +25,12 @@ use ShopeePay\Exception\SignatureException;
  *   verify       = openssl_verify(stringToSign, base64_decode(sig),
  *                                 shopeepayPublicKey, SHA256)
  *
+ * Seamless data (asymmetric, RSA-SHA256), account-linking get-auth-code only:
+ *   stringToSign = URL-encoded seamlessData JSON (rawurlencode of the JSON)
+ *   signature    = base64(openssl_sign(stringToSign, merchantPrivateKey, SHA256))
+ *   // Sandbox-verified 2026-07-16: the gateway accepts the signature computed
+ *   // over the URL-ENCODED JSON, matching the vendor docs' PHP example.
+ *
  * openssl_verify returns 1 = valid, 0 = mismatch, -1 = openssl error.
  * All three are handled explicitly — -1 raises SignatureException with the
  * openssl error chain, 0 returns false, 1 returns true.
@@ -49,6 +55,38 @@ final class Signer
         if (!openssl_sign($stringToSign, $rawSig, $key, OPENSSL_ALGO_SHA256)) {
             throw new SignatureException(
                 'openssl_sign failed for access token: ' . $this->drainOpenSslErrors(),
+            );
+        }
+
+        return base64_encode($rawSig);
+    }
+
+    /**
+     * Sign the account-linking `seamlessData` payload (get-auth-code, svc 10).
+     *
+     * ShopeePay validates the linked phone number when `seamlessData`
+     * (a JSON object such as `{"mobileNumber":"6282112345678"}`) is sent with a
+     * matching `seamlessSign`. Per the vendor docs' PHP example — and confirmed
+     * against the live sandbox — the signed string is the URL-ENCODED JSON, not
+     * the raw JSON, so the caller passes the already-url-encoded payload here.
+     *
+     * @param string $urlEncodedSeamlessData rawurlencode() of the seamlessData JSON
+     */
+    public function signSeamlessData(
+        string $urlEncodedSeamlessData,
+        string $merchantPrivateKeyPem,
+    ): string {
+        $key = openssl_pkey_get_private($merchantPrivateKeyPem);
+        if ($key === false) {
+            throw new SignatureException(
+                'Could not parse merchant private key: ' . $this->drainOpenSslErrors(),
+            );
+        }
+
+        $rawSig = '';
+        if (!openssl_sign($urlEncodedSeamlessData, $rawSig, $key, OPENSSL_ALGO_SHA256)) {
+            throw new SignatureException(
+                'openssl_sign failed for seamlessData: ' . $this->drainOpenSslErrors(),
             );
         }
 
