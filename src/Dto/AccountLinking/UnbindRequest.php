@@ -17,15 +17,28 @@ use InvalidArgumentException;
 final class UnbindRequest
 {
     public readonly string $accountToken;
-    public readonly string $partnerReferenceNo;
+    public readonly ?string $partnerReferenceNo;
 
-    public function __construct(string $accountToken, string $partnerReferenceNo)
+    /**
+     * svc 09 identifies the binding by EITHER accountToken OR partnerReferenceNo
+     * (never both — see toArray()). accountToken is the reliable identifier and
+     * is what toArray() prefers, so partnerReferenceNo is optional: pass just the
+     * token and leave partnerReferenceNo null. At least one must be present.
+     */
+    public function __construct(string $accountToken, ?string $partnerReferenceNo = null)
     {
-        if (trim($accountToken) === '') {
-            throw new InvalidArgumentException('accountToken must not be empty');
+        $hasToken = trim($accountToken) !== '';
+        $hasRef   = $partnerReferenceNo !== null && trim($partnerReferenceNo) !== '';
+
+        if (!$hasToken && !$hasRef) {
+            throw new InvalidArgumentException(
+                'Provide accountToken or partnerReferenceNo to identify the binding to unbind',
+            );
         }
-        if (trim($partnerReferenceNo) === '') {
-            throw new InvalidArgumentException('partnerReferenceNo must not be empty');
+        if ($partnerReferenceNo !== null && trim($partnerReferenceNo) === '') {
+            throw new InvalidArgumentException(
+                'partnerReferenceNo must be null or non-empty (not a whitespace string)',
+            );
         }
 
         $this->accountToken       = $accountToken;

@@ -13,6 +13,8 @@ use ShopeePay\Dto\AccountLinking\InquiryRequest;
 use ShopeePay\Dto\AccountLinking\InquiryResponse;
 use ShopeePay\Dto\AccountLinking\UnbindRequest;
 use ShopeePay\Dto\AccountLinking\UnbindResponse;
+use ShopeePay\Exception\ConfigException;
+use ShopeePay\Http\Signer;
 use ShopeePay\Http\Transport;
 
 /**
@@ -89,6 +91,14 @@ final class AccountLinkingService
      * partnerReferenceNo is optional on this endpoint — included only when
      * the caller explicitly supplied one. merchantId defaults from Config.
      *
+     * When the request carries a `mobileNumber`, ShopeePay is asked to validate
+     * the linked wallet against the user's account: we send `seamlessData` (the
+     * JSON `{"mobileNumber":"..."}`) plus `seamlessSign` (RSA-SHA256 over the
+     * URL-encoded JSON, per the vendor docs and sandbox verification). Note:
+     * enforcement is contract-conditional — the sandbox accepts the fields but
+     * does not reject a mismatched number, so callers must not treat a
+     * successful bind as proof the number matched.
+     *
      * @return array<string, string>
      */
     private function authCodeParams(GetAuthCodeRequest $request): array
@@ -103,6 +113,25 @@ final class AccountLinkingService
         }
         if ($request->scopes !== []) {
             $params['scopes'] = implode(',', $request->scopes);
+        }
+        if ($request->mobileNumber !== null) {
+            // JSON must not contain whitespace or escaped slashes — those bytes
+            // are what gets signed, so the sign input and the sent value must
+            // match exactly. seamlessSign is signed over the URL-encoded form.
+            $seamlessData = json_encode(
+                ['mobileNumber' => $request->mobileNumber],
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+            );
+            // json_encode with JSON_THROW_ON_ERROR cannot return false, but the
+            // return type is `string|false` in PHP <8.3, so narrow defensively.
+            if (!is_string($seamlessData)) {
+                throw new ConfigException('json_encode produced a non-string result for seamlessData');
+            }
+            $params['seamlessData'] = $seamlessData;
+            $params['seamlessSign'] = (new Signer())->signSeamlessData(
+                rawurlencode($seamlessData),
+                $this->config->privateKey,
+            );
         }
 
         return $params;
